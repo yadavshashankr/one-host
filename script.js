@@ -460,7 +460,7 @@ function setupPeerHandlers() {
         }
         
         updateConnectionStatus('', errorMessage);
-        showNotification(errorMessage, 'error');
+        // No notification - status change will inform the user
 
         // If this was during a custom ID setup, revert to auto-generated ID
         if (elements.peerIdEdit && !elements.peerIdEdit.classList.contains('hidden')) {

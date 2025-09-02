@@ -285,7 +285,7 @@ class OneHostApp {
             }
             
             this.updateConnectionStatus('', errorMessage);
-            notificationService.error(errorMessage);
+            // No notification - status change will inform the user
 
             // If this was during a custom ID setup, revert to auto-generated ID
             if (dom.hasClass('peerIdEdit', 'hidden') === false) {
