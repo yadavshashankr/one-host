@@ -581,13 +581,27 @@ function setupConnectionHandlers(conn) {
                     // Handle keep-alive response
                     console.log(`Keep-alive response received from peer ${conn.peer}`);
                     break;
+                case 'health-check':
+                    // Handle health check message
+                    console.log(`Health check received from peer ${conn.peer}`);
+                    // Send health check response
+                    conn.send({
+                        type: 'health-check-response',
+                        timestamp: Date.now(),
+                        peerId: peer.id
+                    });
+                    break;
+                case 'health-check-response':
+                    // Handle health check response
+                    console.log(`Health check response received from peer ${conn.peer}`);
+                    break;
                 case 'disconnect-notification':
                     // Handle disconnect notification
                     console.log(`Disconnect notification received from peer ${conn.peer}`);
                     connections.delete(conn.peer);
                     updateConnectionStatus(connections.size > 0 ? 'connected' : '', 
                         connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
-                    showNotification(`Peer ${conn.peer} disconnected`, 'warning');
+                    // No notification - status change will inform the user
                     break;
                 case 'file-info':
                     // Handle file info without blob
@@ -652,24 +666,27 @@ function setupConnectionHandlers(conn) {
         updateConnectionStatus(connections.size > 0 ? 'connected' : '', 
             connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
         if (connections.size === 0) {
-            showNotification('All peers disconnected', 'error');
+            // No notification - status change will inform the user
         } else {
-            showNotification(`Peer ${conn.peer} disconnected`, 'warning');
+            // No notification - status change will inform the user
         }
     });
 
     conn.on('error', (error) => {
         console.error('Connection Error:', error);
-        updateConnectionStatus('', 'Connection error');
-        showNotification('Connection error occurred', 'error');
         
-        // Set a timeout to attempt reconnection
+        // Don't immediately show error notification - it might be temporary
+        // Only attempt reconnection if it persists for a while
         if (!connectionTimeouts.has(conn.peer)) {
             const timeout = setTimeout(() => {
+                console.log(`⚠️ Connection error persisted for ${conn.peer}, attempting reconnection...`);
+                updateConnectionStatus('', 'Connection error');
+                
+                // Attempt reconnection
                 console.log(`Attempting to reconnect to ${conn.peer} after error...`);
                 reconnectToPeer(conn.peer);
                 connectionTimeouts.delete(conn.peer);
-            }, 5000); // Wait 5 seconds before attempting reconnection
+            }, 8000); // Wait 8 seconds before attempting reconnection
             
             connectionTimeouts.set(conn.peer, timeout);
         }
@@ -1346,7 +1363,6 @@ elements.connectButton.addEventListener('click', () => {
         setupConnectionHandlers(newConnection);
     } catch (error) {
         console.error('Connection attempt error:', error);
-        showNotification('Failed to establish connection', 'error');
         updateConnectionStatus('', 'Connection failed');
         
         // Track connection failure
@@ -1737,23 +1753,29 @@ function initConnectionKeepAlive() {
     window.addEventListener('beforeunload', handleBeforeUnload);
 }
 
-// Handle page visibility changes
+// Handle page visibility changes with improved mobile handling
 function handleVisibilityChange() {
     isPageVisible = !document.hidden;
     
     if (isPageVisible) {
-        console.log('Page became visible, checking connections...');
-        checkConnections();
+        console.log('📱 Page became visible, performing gentle connection check...');
+        // Don't immediately check connections - give them time to stabilize
+        setTimeout(() => {
+            checkConnections();
+        }, 1000); // Wait 1 second for connections to stabilize
     } else {
-        console.log('Page became hidden, maintaining connections...');
+        console.log('📱 Page became hidden, maintaining connections...');
         sendKeepAlive();
     }
 }
 
-// Handle page focus
+// Handle page focus with improved mobile handling
 function handlePageFocus() {
-    console.log('Page focused, checking connections...');
-    checkConnections();
+    console.log('📱 Page focused, performing gentle connection check...');
+    // Don't immediately check connections - give them time to stabilize
+    setTimeout(() => {
+        checkConnections();
+    }, 1500); // Wait 1.5 seconds for connections to stabilize
 }
 
 // Handle page blur
@@ -1808,13 +1830,89 @@ function sendDisconnectNotification() {
     }
 }
 
-// Check and restore connections
+// Check and restore connections with improved mobile handling
 function checkConnections() {
+    console.log('🔍 Checking connection health...');
+    
     for (const [peerId, conn] of connections) {
-        if (!conn.open) {
-            console.log(`Connection to ${peerId} is closed, attempting to reconnect...`);
-            reconnectToPeer(peerId);
+        if (conn) {
+            // More robust connection health check
+            const isHealthy = checkConnectionHealth(conn, peerId);
+            
+            if (!isHealthy) {
+                console.log(`⚠️ Connection to ${peerId} appears unhealthy, attempting to restore...`);
+                // Don't immediately reconnect - try a gentle health check first
+                attemptConnectionRestore(conn, peerId);
+            } else {
+                console.log(`✅ Connection to ${peerId} is healthy`);
+            }
         }
+    }
+}
+
+// Improved connection health check
+function checkConnectionHealth(conn, peerId) {
+    try {
+        // Check if connection object exists and has basic properties
+        if (!conn || typeof conn !== 'object') {
+            return false;
+        }
+        
+        // Check if connection is marked as open
+        if (conn.open === false) {
+            return false;
+        }
+        
+        // Check if connection has a peer property
+        if (!conn.peer || conn.peer !== peerId) {
+            return false;
+        }
+        
+        // Try to send a gentle ping to test connectivity
+        // Don't throw error if it fails - just return false
+        try {
+            // Send a lightweight health check
+            conn.send({
+                type: 'health-check',
+                timestamp: Date.now(),
+                peerId: peer.id
+            });
+            return true;
+        } catch (error) {
+            console.log(`Health check failed for ${peerId}:`, error.message);
+            return false;
+        }
+        
+    } catch (error) {
+        console.log(`Health check error for ${peerId}:`, error.message);
+        return false;
+    }
+}
+
+// Gentle connection restoration attempt
+function attemptConnectionRestore(conn, peerId) {
+    // Don't immediately reconnect - give the connection a chance to recover
+    if (!connectionTimeouts.has(peerId)) {
+        const timeout = setTimeout(() => {
+            console.log(`🔄 Attempting gentle connection restoration for ${peerId}...`);
+            
+            // Try to send a keep-alive first
+            try {
+                conn.send({
+                    type: 'keep-alive',
+                    timestamp: Date.now(),
+                    peerId: peer.id
+                });
+                console.log(`✅ Keep-alive sent successfully to ${peerId} - connection may be healthy`);
+            } catch (error) {
+                console.log(`❌ Keep-alive failed for ${peerId}, attempting reconnection...`);
+                reconnectToPeer(peerId);
+            }
+            
+            connectionTimeouts.delete(peerId);
+        }, 2000); // Wait 2 seconds before attempting restoration
+        
+        connectionTimeouts.set(peerId, timeout);
     }
 }
 
