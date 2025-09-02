@@ -2124,14 +2124,30 @@ function isEditingAllowed() {
     const statusText = statusTextElement ? statusTextElement.textContent : '';
     const hasConnections = connections.size > 0;
     
+    // Check if the status indicates we're ready to connect (works in any language)
+    // Look for keywords that indicate readiness, regardless of language
+    const isReadyStatus = statusText && (
+        statusText.includes('Ready') || 
+        statusText.includes('ready') ||
+        statusText.includes('तैयार') || // Hindi: ready
+        statusText.includes('कनेक्ट') || // Hindi: connect
+        statusText.includes('connect') ||
+        statusText.includes('Connect') ||
+        !statusText.includes('Connecting') && 
+        !statusText.includes('Connected') && 
+        !statusText.includes('Disconnected') &&
+        !statusText.includes('Error') &&
+        !statusText.includes('Failed')
+    );
+    
     console.log('🔍 isEditingAllowed check:', {
         statusText: statusText,
         hasConnections: hasConnections,
-        statusTextMatch: statusText === 'Ready to connect',
-        result: statusText === 'Ready to connect' && !hasConnections
+        isReadyStatus: isReadyStatus,
+        result: isReadyStatus && !hasConnections
     });
     
-    return statusText === 'Ready to connect' && !hasConnections;
+    return isReadyStatus && !hasConnections;
 }
 
 // Update edit button state based on connection status
