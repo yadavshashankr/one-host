@@ -468,13 +468,15 @@ function setupPeerHandlers() {
         updateConnectionStatus('', 'Disconnected');
         isConnectionReady = false;
         
-        // Try to reconnect
-        setTimeout(() => {
-            if (peer && !peer.destroyed) {
-                console.log('Attempting to reconnect...');
-                peer.reconnect();
-            }
-        }, 3000);
+        // Only try to reconnect if this is not a manual peer ID change
+        if (!peer._isChangingId) {
+            setTimeout(() => {
+                if (peer && !peer.destroyed) {
+                    console.log('Attempting to reconnect...');
+                    peer.reconnect();
+                }
+            }, 3000);
+        }
     });
 
     peer.on('close', () => {
@@ -492,6 +494,7 @@ function initPeerJS() {
         // Destroy existing peer if any
         if (peer) {
             console.log('Destroying existing peer connection');
+            peer._isChangingId = true; // Flag to prevent reconnection
             peer.destroy();
             peer = null;
         }
@@ -2311,7 +2314,7 @@ async function saveEditedPeerId() {
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'global.stun.twilio.com:3478' }
+                    { urls: 'stun:global.stun.twilio.com:3478' }
                 ]
             }
         });
