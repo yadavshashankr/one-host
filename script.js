@@ -422,7 +422,16 @@ function setupPeerHandlers() {
 
     peer.on('open', (id) => {
         console.log('Peer opened with ID:', id);
-        elements.peerId.textContent = id;
+        
+        // Get fresh reference to peer ID element
+        const peerIdElement = document.getElementById('peer-id');
+        if (peerIdElement) {
+            peerIdElement.textContent = id;
+            console.log('✅ Peer ID set to:', id);
+        } else {
+            console.error('❌ Peer ID element not found!');
+        }
+        
         updateConnectionStatus('', 'Ready to connect');
         generateQRCode(id);
         initShareButton();
@@ -1495,13 +1504,19 @@ function init() {
     
     // Add event delegation for peer ID editing to handle translation interference
     document.addEventListener('click', (e) => {
+        console.log('🖱️ Click detected on:', e.target);
+        console.log('🖱️ Click target closest to edit-id:', e.target.closest('#edit-id'));
+        
         if (e.target.closest('#edit-id')) {
+            console.log('✅ Edit button clicked, calling startEditingPeerId');
             e.preventDefault();
             startEditingPeerId();
         } else if (e.target.closest('#save-id')) {
+            console.log('✅ Save button clicked, calling saveEditedPeerId');
             e.preventDefault();
             saveEditedPeerId();
         } else if (e.target.closest('#cancel-edit')) {
+            console.log('✅ Cancel button clicked, calling cancelEditingPeerId');
             e.preventDefault();
             cancelEditingPeerId();
         }
@@ -2104,8 +2119,18 @@ function createDownloadButton(fileInfo) {
 
 // Check if peer ID editing is allowed
 function isEditingAllowed() {
-    const statusText = elements.statusText.textContent;
+    // Get fresh reference to status text
+    const statusTextElement = document.getElementById('status-text');
+    const statusText = statusTextElement ? statusTextElement.textContent : '';
     const hasConnections = connections.size > 0;
+    
+    console.log('🔍 isEditingAllowed check:', {
+        statusText: statusText,
+        hasConnections: hasConnections,
+        statusTextMatch: statusText === 'Ready to connect',
+        result: statusText === 'Ready to connect' && !hasConnections
+    });
+    
     return statusText === 'Ready to connect' && !hasConnections;
 }
 
@@ -2120,7 +2145,17 @@ function updateEditButtonState() {
 
 // Start editing peer ID
 function startEditingPeerId() {
-    if (!isEditingAllowed()) return;
+    console.log('🔄 startEditingPeerId called');
+    
+    // Check if editing is allowed
+    const canEdit = isEditingAllowed();
+    console.log('Can edit peer ID:', canEdit);
+    
+    if (!canEdit) {
+        console.log('Editing not allowed. Status:', elements.statusText?.textContent, 'Connections:', connections.size);
+        showNotification('Cannot edit peer ID while connected to peers', 'warning');
+        return;
+    }
     
     // Get fresh references to elements to handle translation interference
     const peerIdElement = document.getElementById('peer-id');
@@ -2129,6 +2164,14 @@ function startEditingPeerId() {
     const saveButton = document.getElementById('save-id');
     const cancelButton = document.getElementById('cancel-edit');
     
+    console.log('Elements found:', {
+        peerId: !!peerIdElement,
+        peerIdEdit: !!peerIdEditElement,
+        editButton: !!editButton,
+        saveButton: !!saveButton,
+        cancelButton: !!cancelButton
+    });
+    
     if (!peerIdElement || !peerIdEditElement || !editButton || !saveButton || !cancelButton) {
         console.error('Required elements for peer ID editing not found');
         showNotification('Error: Cannot edit peer ID - required elements not found', 'error');
@@ -2136,6 +2179,7 @@ function startEditingPeerId() {
     }
     
     const currentId = peerIdElement.textContent;
+    console.log('Current peer ID:', currentId);
     
     // Track peer ID edit start
     Analytics.track('peer_id_edit_started', {
@@ -2144,14 +2188,20 @@ function startEditingPeerId() {
     });
     
     peerIdEditElement.value = currentId;
+    console.log('Set edit input value to:', currentId);
     
     peerIdElement.classList.add('hidden');
     peerIdEditElement.classList.remove('hidden');
     editButton.classList.add('hidden');
     saveButton.classList.remove('hidden');
     cancelButton.classList.remove('hidden');
+    
+    console.log('Updated element visibility');
+    
     peerIdEditElement.focus();
     peerIdEditElement.select();
+    
+    console.log('Peer ID editing started successfully');
 }
 
 // Save edited peer ID
@@ -2367,5 +2417,19 @@ if (window.MutationObserver) {
         attributeFilter: ['translated', 'lang']
     });
 }
+
+// Debug function - can be called from console to test peer ID editing
+window.testPeerIdEditing = function() {
+    console.log('🧪 Testing peer ID editing...');
+    console.log('Current peer ID element:', document.getElementById('peer-id'));
+    console.log('Current peer ID text:', document.getElementById('peer-id')?.textContent);
+    console.log('Edit button element:', document.getElementById('edit-id'));
+    console.log('Edit input element:', document.getElementById('peer-id-edit'));
+    console.log('Status text:', document.getElementById('status-text')?.textContent);
+    console.log('Connections count:', connections.size);
+    
+    // Test the edit function directly
+    startEditingPeerId();
+};
 
 init();

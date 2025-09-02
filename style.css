@@ -286,6 +286,8 @@ h3 {
     flex: 1;
     word-break: break-all;
     font-family: monospace;
+    color: #000000;
+    font-weight: bold;
 }
 
 .peer-actions {
@@ -813,7 +815,7 @@ input[type="file"] {
 #peer-id[translate="no"] {
     font-family: monospace !important;
     font-weight: bold !important;
-    color: var(--primary-color) !important;
+    color: #000000 !important;
 }
 
 /* Protect input placeholders from translation */
