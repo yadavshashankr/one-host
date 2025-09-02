@@ -1394,13 +1394,7 @@ elements.connectButton.addEventListener('click', () => {
             return;
         }
         
-        // Check if peer ID looks like a valid UUID format (typical PeerJS format)
-        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (!uuidPattern.test(remotePeerIdValue)) {
-            updateConnectionStatus('', 'Invalid peer ID format');
-            showNotification('Peer ID should be a long string like: e8b96f57-a15d-486b-971b-1e37371bd1a0', 'warning');
-            // Don't return - allow connection attempt for custom peer IDs
-        }
+
         
         const newConnection = peer.connect(remotePeerIdValue, {
             reliable: true
