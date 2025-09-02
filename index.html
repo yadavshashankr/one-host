@@ -26,27 +26,26 @@
   <meta property="og:site_name" content="One-Host">
   <meta property="og:title" content="One-Host - Secure P2P File Sharing">
   <meta property="og:description" content="Share files instantly and securely between devices using One-Host's peer-to-peer WebRTC technology. No server required!">
-  <!-- Primary og:image for WhatsApp -->
+  
+  <!-- WhatsApp Optimized og:image -->
   <meta property="og:image" id="og-image-whatsapp" content="">
-  <meta property="og:image:type" content="image/png">
-  <meta property="og:image:width" content="400">
-  <meta property="og:image:height" content="400">
-  <!-- Secondary og:image for other platforms -->
+  <meta property="og:image:type" content="image/jpeg">
+  <meta property="og:image:width" content="300">
+  <meta property="og:image:height" content="300">
+  <meta property="og:image:alt" content="One-Host - P2P File Sharing Application">
+  
+  <!-- Standard og:image for other platforms -->
   <meta property="og:image" id="og-image-main" content="">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="One-Host - P2P File Sharing Application">
+  
   <meta property="og:locale" content="en_US">
-  <meta property="og:image" id="og-image-whatsapp-alt" content="">
-  <meta property="og:image:type" content="image/png">
-  <meta property="og:image:width" content="400">
-  <meta property="og:image:height" content="400">
-  <meta property="og:image" id="og-image-main-alt" content="">
-  <meta property="og:image:type" content="image/png">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="One-Host - P2P File Sharing Application">
+  
+  <!-- WhatsApp Specific Meta Tags -->
+  <meta property="og:image:secure_url" id="og-image-whatsapp-secure" content="">
+  <meta name="twitter:image:alt" content="One-Host - P2P File Sharing Application">
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image">
@@ -86,12 +85,16 @@
     document.addEventListener('DOMContentLoaded', function() {
       const baseUrl = window.CONFIG?.BASE_URL || 'https://one-host.app/';
       
-      // Update Open Graph URLs
-      document.getElementById('og-url').setAttribute('content', baseUrl);
-      document.getElementById('og-image-whatsapp').setAttribute('content', baseUrl + 'assets/linkedin-og.jpeg?v=2');
-      document.getElementById('og-image-main').setAttribute('content', baseUrl + 'assets/og.png');
-      document.getElementById('og-image-whatsapp-alt').setAttribute('content', baseUrl + 'assets/og-whatsapp.png');
-      document.getElementById('og-image-main-alt').setAttribute('content', baseUrl + 'assets/og.png');
+          // Update Open Graph URLs
+    document.getElementById('og-url').setAttribute('content', baseUrl);
+    
+    // WhatsApp optimized image (300x300 JPEG for better compatibility)
+    const whatsappImageUrl = baseUrl + 'assets/og-whatsapp.png?v=' + Date.now();
+    document.getElementById('og-image-whatsapp').setAttribute('content', whatsappImageUrl);
+    document.getElementById('og-image-whatsapp-secure').setAttribute('content', whatsappImageUrl);
+    
+    // Standard image for other platforms (1200x630 PNG)
+    document.getElementById('og-image-main').setAttribute('content', baseUrl + 'assets/og.png?v=' + Date.now());
       
       // Update Twitter URLs
       document.getElementById('twitter-url').setAttribute('content', baseUrl);
