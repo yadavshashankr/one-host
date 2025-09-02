@@ -49,7 +49,7 @@ console.log(`Base URL: ${BASE_URL}`);
 console.log(`GitHub URL: ${GITHUB_URL}`);
 
 // Message Types for WebRTC communication
-export const MESSAGE_TYPES = {
+const MESSAGE_TYPES = {
     FILE_INFO: 'file-info',
     FILE_HEADER: 'file-header',
     FILE_CHUNK: 'file-chunk',
@@ -67,7 +67,7 @@ export const MESSAGE_TYPES = {
 };
 
 // PeerJS Configuration
-export const PEER_CONFIG = {
+const PEER_CONFIG = {
     debug: 2,
     config: {
         iceServers: [
@@ -78,9 +78,14 @@ export const PEER_CONFIG = {
 };
 
 // UI Configuration
-export const UI_CONFIG = {
+const UI_CONFIG = {
     notificationTimeout: 5000,
     progressUpdateThreshold: 1, // Update progress every 1%
     connectionTimeout: 15000,
     reconnectionDelay: 3000
-}; 
+};
+
+// Make constants globally available
+window.MESSAGE_TYPES = MESSAGE_TYPES;
+window.PEER_CONFIG = PEER_CONFIG;
+window.UI_CONFIG = UI_CONFIG; 

@@ -535,7 +535,7 @@ function initPeerJS() {
 }
 
 // Setup connection event handlers
-function setupConnectionHandlers(conn) {
+function setupConnectionHandlers(conn, connectionTimeout = null) {
     conn.on('open', () => {
         console.log('Connection opened with:', conn.peer);
         isConnectionReady = true;
@@ -550,6 +550,12 @@ function setupConnectionHandlers(conn) {
             device_type: Analytics.getDeviceType(),
             connection_type: conn.type || 'data'
         });
+        
+        // Clear connection timeout if provided
+        if (connectionTimeout) {
+            clearTimeout(connectionTimeout);
+            console.log('Connection timeout cleared for peer:', conn.peer);
+        }
         
         // Clear any existing timeout for this connection
         if (connectionTimeouts.has(conn.peer)) {
@@ -684,6 +690,12 @@ function setupConnectionHandlers(conn) {
     conn.on('error', (error) => {
         console.error('Connection Error:', error);
         
+        // Clear connection timeout if provided
+        if (connectionTimeout) {
+            clearTimeout(connectionTimeout);
+            console.log('Connection timeout cleared due to error for peer:', conn.peer);
+        }
+        
         // Don't immediately show error notification - it might be temporary
         // Only attempt reconnection if it persists for a while
         if (!connectionTimeouts.has(conn.peer)) {
@@ -698,6 +710,27 @@ function setupConnectionHandlers(conn) {
             }, 8000); // Wait 8 seconds before attempting reconnection
             
             connectionTimeouts.set(conn.peer, timeout);
+        }
+    });
+
+    conn.on('close', () => {
+        console.log('Connection closed with:', conn.peer);
+        
+        // Clear connection timeout if provided
+        if (connectionTimeout) {
+            clearTimeout(connectionTimeout);
+            console.log('Connection timeout cleared due to close for peer:', conn.peer);
+        }
+        
+        // Remove from connections
+        connections.delete(conn.peer);
+        
+        // Update status if no more connections
+        if (connections.size === 0) {
+            updateConnectionStatus('', 'Ready to connect');
+            elements.fileTransferSection.classList.add('hidden');
+        } else {
+            updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
         }
     });
 }
@@ -1369,11 +1402,35 @@ elements.connectButton.addEventListener('click', () => {
             device_type: Analytics.getDeviceType()
         });
         
+        // Check if peer ID is valid format first
+        if (remotePeerIdValue.length < 3) {
+            updateConnectionStatus('', 'Invalid peer ID - too short');
+            showNotification('Peer ID must be at least 3 characters long', 'error');
+            return;
+        }
+        
         const newConnection = peer.connect(remotePeerIdValue, {
             reliable: true
         });
+        
+        // Add connection timeout handling
+        const connectionTimeout = setTimeout(() => {
+            if (connections.has(remotePeerIdValue) && !connections.get(remotePeerIdValue).open) {
+                console.error('Connection timeout for peer:', remotePeerIdValue);
+                connections.delete(remotePeerIdValue);
+                updateConnectionStatus('', 'Connection timeout - peer may be offline');
+                showNotification('Connection timeout - peer may be offline or unreachable', 'error');
+                
+                // Track connection timeout
+                Analytics.track('connection_timeout', {
+                    target_peer_id: remotePeerIdValue,
+                    target_peer_id_length: remotePeerIdValue.length
+                });
+            }
+        }, 15000); // 15 second timeout
+        
         connections.set(remotePeerIdValue, newConnection);
-        setupConnectionHandlers(newConnection);
+        setupConnectionHandlers(newConnection, connectionTimeout);
     } catch (error) {
         console.error('Connection attempt error:', error);
         updateConnectionStatus('', 'Connection failed');
