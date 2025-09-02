@@ -2258,6 +2258,9 @@ function startEditingPeerId() {
     peerIdEditElement.focus();
     peerIdEditElement.select();
     
+    // Ensure key event listeners are attached
+    initPeerIdEditing();
+    
     console.log('Peer ID editing started successfully');
 }
 
@@ -2404,13 +2407,28 @@ function initPeerIdEditing() {
     // Add Enter key support for the edit input field
     const peerIdEdit = document.getElementById('peer-id-edit');
     if (peerIdEdit) {
-        peerIdEdit.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                saveEditedPeerId();
-            } else if (e.key === 'Escape') {
-                cancelEditingPeerId();
-            }
-        });
+        // Remove any existing listeners to prevent duplicates
+        peerIdEdit.removeEventListener('keypress', handlePeerIdEditKeyPress);
+        peerIdEdit.removeEventListener('keydown', handlePeerIdEditKeyDown);
+        
+        // Add new listeners
+        peerIdEdit.addEventListener('keypress', handlePeerIdEditKeyPress);
+        peerIdEdit.addEventListener('keydown', handlePeerIdEditKeyDown);
+    }
+}
+
+// Handle key events for peer ID editing
+function handlePeerIdEditKeyPress(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        saveEditedPeerId();
+    }
+}
+
+function handlePeerIdEditKeyDown(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelEditingPeerId();
     }
 }
 
