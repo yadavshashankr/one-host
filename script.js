@@ -1387,12 +1387,7 @@ elements.connectButton.addEventListener('click', () => {
             device_type: Analytics.getDeviceType()
         });
         
-        // Check if peer ID is valid format first
-        if (remotePeerIdValue.length < 3) {
-            updateConnectionStatus('', 'Invalid peer ID - too short');
-            showNotification('Peer ID must be at least 3 characters long', 'error');
-            return;
-        }
+
         
 
         
@@ -1542,7 +1537,7 @@ function init() {
     loadRecentPeers();
     checkUrlForPeerId(); // Check URL for peer ID on load
     initConnectionKeepAlive(); // Initialize connection keep-alive system
-    initPeerIdEditing(); // Initialize peer ID editing
+            // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
     
@@ -1844,8 +1839,7 @@ function handleVisibilityChange() {
         // Don't immediately check connections - give them time to stabilize
         setTimeout(() => {
             checkConnections();
-            // Reinitialize peer ID editing to handle translation interference
-            initPeerIdEditing();
+                    // Peer ID editing is handled by event delegation
         }, 1000); // Wait 1 second for connections to stabilize
     } else {
         console.log('📱 Page became hidden, maintaining connections...');
@@ -2402,37 +2396,12 @@ function cancelEditingPeerId() {
     if (cancelButton) cancelButton.classList.add('hidden');
 }
 
-// Initialize peer ID editing
+// Initialize peer ID editing - simplified to avoid conflicts with event delegation
 function initPeerIdEditing() {
-    // Remove existing event listeners to prevent duplicates
-    const editButton = document.getElementById('edit-id');
-    const saveButton = document.getElementById('save-id');
-    const cancelButton = document.getElementById('cancel-edit');
+    // Add Enter key support for the edit input field
     const peerIdEdit = document.getElementById('peer-id-edit');
-    
-    if (editButton) {
-        // Clone and replace to remove old listeners
-        const newEditButton = editButton.cloneNode(true);
-        editButton.parentNode.replaceChild(newEditButton, editButton);
-        newEditButton.addEventListener('click', startEditingPeerId);
-    }
-    
-    if (saveButton) {
-        const newSaveButton = saveButton.cloneNode(true);
-        saveButton.parentNode.replaceChild(newSaveButton, saveButton);
-        newSaveButton.addEventListener('click', saveEditedPeerId);
-    }
-    
-    if (cancelButton) {
-        const newCancelButton = cancelButton.cloneNode(true);
-        cancelButton.parentNode.replaceChild(newCancelButton, cancelButton);
-        newCancelButton.addEventListener('click', cancelEditingPeerId);
-    }
-    
     if (peerIdEdit) {
-        const newPeerIdEdit = peerIdEdit.cloneNode(true);
-        peerIdEdit.parentNode.replaceChild(newPeerIdEdit, peerIdEdit);
-        newPeerIdEdit.addEventListener('keypress', (e) => {
+        peerIdEdit.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 saveEditedPeerId();
             } else if (e.key === 'Escape') {
@@ -2453,9 +2422,7 @@ function detectTranslationChanges() {
     if (hasTranslation) {
         console.log('🔄 Translation detected, reinitializing peer ID editing system...');
         // Wait a bit for translation to complete
-        setTimeout(() => {
-            initPeerIdEditing();
-        }, 500);
+        // Peer ID editing is handled by event delegation
     }
 }
 
