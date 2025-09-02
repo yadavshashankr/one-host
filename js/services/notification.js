@@ -142,14 +142,14 @@ class NotificationService {
         content.textContent = this.capitalizeFirst(message);
 
         notification.innerHTML = `
-            <span class="notification-icon">${icon}</span>
+            <span class="notification-icon" translate="no">${icon}</span>
             <div class="notification-content">${this.capitalizeFirst(message)}</div>
         `;
 
         // Add close button for persistent notifications
         if (type === 'error' || type === 'warning') {
             const closeBtn = document.createElement('button');
-            closeBtn.innerHTML = '&times;';
+            closeBtn.innerHTML = '<span translate="no">&times;</span>';
             closeBtn.className = 'notification-close';
             closeBtn.style.cssText = `
                 background: none;

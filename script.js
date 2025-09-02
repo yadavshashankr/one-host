@@ -187,7 +187,7 @@ requestAndDownloadBlob = async function(fileInfo) {
     const btn = document.querySelector(`button.icon-button[data-file-id="${fileId}"]`);
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '0%';
+        btn.innerHTML = '<span translate="no">0%</span>';
         downloadProgressMap.set(fileId, { button: btn, percent: 0 });
     }
     await originalRequestAndDownloadBlob(fileInfo);
@@ -200,7 +200,7 @@ updateProgress = function(progress, fileId) {
         const entry = downloadProgressMap.get(fileId);
         const percent = Math.floor(progress);
         if (entry.percent !== percent) {
-            entry.button.innerHTML = `<span class='download-progress-text'>${percent}%</span>`;
+            entry.button.innerHTML = `<span class='download-progress-text' translate="no">${percent}%</span>`;
             entry.percent = percent;
         }
     }
@@ -215,7 +215,7 @@ handleFileComplete = async function(data) {
     if (downloadProgressMap.has(fileId)) {
         const entry = downloadProgressMap.get(fileId);
         entry.button.disabled = false;
-        entry.button.innerHTML = '<span class="material-icons">open_in_new</span>';
+        entry.button.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
         // The open logic is already set in downloadBlob
         downloadProgressMap.delete(fileId);
     }
@@ -756,7 +756,7 @@ async function handleFileComplete(data) {
                 const downloadButton = listItem.querySelector('.icon-button');
                 if (downloadButton) {
                     downloadButton.classList.add('download-completed');
-                    downloadButton.innerHTML = '<span class="material-icons">open_in_new</span>';
+                    downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                     downloadButton.title = 'Open file';
                     
                     // Store the blob URL for opening the file
@@ -1220,13 +1220,16 @@ function updateProgress(percent) {
 function addFileToList(name, url, size) {
     const li = document.createElement('li');
     const nameSpan = document.createElement('span');
-    nameSpan.textContent = `${name} (${formatFileSize(size)})`;
+    nameSpan.innerHTML = `${name} (${formatFileSize(size)})`;
+    nameSpan.setAttribute('translate', 'no');
+    nameSpan.setAttribute('data-no-translate', 'true');
     
     const downloadBtn = document.createElement('a');
     downloadBtn.href = url;
     downloadBtn.download = name;
     downloadBtn.className = 'button';
     downloadBtn.textContent = 'Download';
+    downloadBtn.setAttribute('data-translate-key', 'download_button');
     
     // Add click handler to handle blob URL cleanup
     downloadBtn.addEventListener('click', () => {
@@ -1254,7 +1257,8 @@ function formatFileSize(bytes) {
         unitIndex++;
     }
     
-    return `${size.toFixed(1)} ${units[unitIndex]}`;
+    // Add translation protection to file size units
+    return `<span translate="no">${size.toFixed(1)} ${units[unitIndex]}</span>`;
 }
 
 function showNotification(message, type = 'info') {
@@ -1615,6 +1619,7 @@ function updateFilesList(listElement, fileInfo, type) {
     const icon = document.createElement('span');
     icon.className = 'material-icons';
     icon.textContent = getFileIcon(fileInfo.type);
+    icon.setAttribute('translate', 'no');
     
     const info = document.createElement('div');
     info.className = 'file-info';
@@ -1622,10 +1627,14 @@ function updateFilesList(listElement, fileInfo, type) {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'file-name';
     nameSpan.textContent = fileInfo.name;
+    nameSpan.setAttribute('translate', 'no');
+    nameSpan.setAttribute('data-no-translate', 'true');
     
     const sizeSpan = document.createElement('span');
     sizeSpan.className = 'file-size';
-    sizeSpan.textContent = formatFileSize(fileInfo.size);
+    sizeSpan.innerHTML = formatFileSize(fileInfo.size);
+    sizeSpan.setAttribute('translate', 'no');
+    sizeSpan.setAttribute('data-no-translate', 'true');
 
     const sharedBySpan = document.createElement('span');
     sharedBySpan.className = 'shared-by';
@@ -1640,7 +1649,7 @@ function updateFilesList(listElement, fileInfo, type) {
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'icon-button';
     downloadBtn.title = 'Download file';
-    downloadBtn.innerHTML = '<span class="material-icons">download</span>';
+    downloadBtn.innerHTML = '<span class="material-icons" translate="no">download</span>';
     downloadBtn.onclick = async () => {
         try {
             // Track download button click
@@ -1957,7 +1966,7 @@ function downloadBlob(blob, fileName, fileId) {
             const downloadButton = listItem.querySelector('.icon-button');
             if (downloadButton) {
                 downloadButton.classList.add('download-completed');
-                downloadButton.innerHTML = '<span class="material-icons">open_in_new</span>';
+                downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                 downloadButton.title = 'Open file';
                 
                 // Store the blob URL for opening the file
@@ -2063,6 +2072,7 @@ async function initiateSimultaneousDownload(fileInfo) {
 function createDownloadButton(fileInfo) {
     const downloadButton = document.createElement('button');
     downloadButton.textContent = 'Download';
+    downloadButton.setAttribute('data-translate-key', 'download_button');
     downloadButton.classList.add('download-button');
     downloadButton.onclick = async () => {
         try {
