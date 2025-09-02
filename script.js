@@ -76,23 +76,8 @@ Analytics.track('app_initialized', {
     connection_type: navigator.connection?.effectiveType || 'unknown'
 });
 
-// Add simultaneous download message types
-const MESSAGE_TYPES = {
-    FILE_INFO: 'file-info',
-    FILE_HEADER: 'file-header',
-    FILE_CHUNK: 'file-chunk',
-    FILE_COMPLETE: 'file-complete',
-    BLOB_REQUEST: 'blob-request',
-    BLOB_REQUEST_FORWARDED: 'blob-request-forwarded',
-    BLOB_ERROR: 'blob-error',
-    CONNECTION_NOTIFICATION: 'connection-notification',
-    KEEP_ALIVE: 'keep-alive',
-    KEEP_ALIVE_RESPONSE: 'keep-alive-response',
-    DISCONNECT_NOTIFICATION: 'disconnect-notification',
-    SIMULTANEOUS_DOWNLOAD_REQUEST: 'simultaneous-download-request',
-    SIMULTANEOUS_DOWNLOAD_READY: 'simultaneous-download-ready',
-    SIMULTANEOUS_DOWNLOAD_START: 'simultaneous-download-start'
-};
+// MESSAGE_TYPES is now available globally from constants.js
+// Use window.MESSAGE_TYPES or just MESSAGE_TYPES (if loaded after constants.js)
 
 // DOM Elements
 const elements = {
