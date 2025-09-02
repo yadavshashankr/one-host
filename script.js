@@ -1492,6 +1492,20 @@ function init() {
     initPeerIdEditing(); // Initialize peer ID editing
     initSocialMediaToggle(); // Initialize social media toggle
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
+    
+    // Add event delegation for peer ID editing to handle translation interference
+    document.addEventListener('click', (e) => {
+        if (e.target.closest('#edit-id')) {
+            e.preventDefault();
+            startEditingPeerId();
+        } else if (e.target.closest('#save-id')) {
+            e.preventDefault();
+            saveEditedPeerId();
+        } else if (e.target.closest('#cancel-edit')) {
+            e.preventDefault();
+            cancelEditingPeerId();
+        }
+    });
 }
 
 // Social Media Toggle Functionality
@@ -1771,6 +1785,8 @@ function handleVisibilityChange() {
         // Don't immediately check connections - give them time to stabilize
         setTimeout(() => {
             checkConnections();
+            // Reinitialize peer ID editing to handle translation interference
+            initPeerIdEditing();
         }, 1000); // Wait 1 second for connections to stabilize
     } else {
         console.log('📱 Page became hidden, maintaining connections...');
@@ -2106,7 +2122,20 @@ function updateEditButtonState() {
 function startEditingPeerId() {
     if (!isEditingAllowed()) return;
     
-    const currentId = elements.peerId.textContent;
+    // Get fresh references to elements to handle translation interference
+    const peerIdElement = document.getElementById('peer-id');
+    const peerIdEditElement = document.getElementById('peer-id-edit');
+    const editButton = document.getElementById('edit-id');
+    const saveButton = document.getElementById('save-id');
+    const cancelButton = document.getElementById('cancel-edit');
+    
+    if (!peerIdElement || !peerIdEditElement || !editButton || !saveButton || !cancelButton) {
+        console.error('Required elements for peer ID editing not found');
+        showNotification('Error: Cannot edit peer ID - required elements not found', 'error');
+        return;
+    }
+    
+    const currentId = peerIdElement.textContent;
     
     // Track peer ID edit start
     Analytics.track('peer_id_edit_started', {
@@ -2114,20 +2143,33 @@ function startEditingPeerId() {
         device_type: Analytics.getDeviceType()
     });
     
-    elements.peerIdEdit.value = currentId;
+    peerIdEditElement.value = currentId;
     
-    elements.peerId.classList.add('hidden');
-    elements.peerIdEdit.classList.remove('hidden');
-    elements.editIdButton.classList.add('hidden');
-    elements.saveIdButton.classList.remove('hidden');
-    elements.cancelEditButton.classList.remove('hidden');
-    elements.peerIdEdit.focus();
-    elements.peerIdEdit.select();
+    peerIdElement.classList.add('hidden');
+    peerIdEditElement.classList.remove('hidden');
+    editButton.classList.add('hidden');
+    saveButton.classList.remove('hidden');
+    cancelButton.classList.remove('hidden');
+    peerIdEditElement.focus();
+    peerIdEditElement.select();
 }
 
 // Save edited peer ID
 async function saveEditedPeerId() {
-    const newPeerId = elements.peerIdEdit.value.trim();
+    // Get fresh references to elements to handle translation interference
+    const peerIdEditElement = document.getElementById('peer-id-edit');
+    const peerIdElement = document.getElementById('peer-id');
+    const editButton = document.getElementById('edit-id');
+    const saveButton = document.getElementById('save-id');
+    const cancelButton = document.getElementById('cancel-edit');
+    
+    if (!peerIdEditElement || !peerIdElement || !editButton || !saveButton || !cancelButton) {
+        console.error('Required elements for peer ID editing not found');
+        showNotification('Error: Cannot save peer ID - required elements not found', 'error');
+        return;
+    }
+    
+    const newPeerId = peerIdEditElement.value.trim();
     
     if (!newPeerId) {
         showNotification('Peer ID cannot be empty', 'error');
@@ -2165,7 +2207,7 @@ async function saveEditedPeerId() {
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' }
+                    { urls: 'global.stun.twilio.com:3478' }
                 ]
             }
         });
@@ -2190,7 +2232,10 @@ async function saveEditedPeerId() {
         });
 
         // Update UI
-        elements.peerId.textContent = newPeerId;
+        const peerIdElement = document.getElementById('peer-id');
+        if (peerIdElement) {
+            peerIdElement.textContent = newPeerId;
+        }
         cancelEditingPeerId();
         
         // Generate new QR code
@@ -2233,26 +2278,51 @@ async function saveEditedPeerId() {
 
 // Cancel editing peer ID
 function cancelEditingPeerId() {
-    elements.peerId.classList.remove('hidden');
-    elements.peerIdEdit.classList.add('hidden');
-    elements.editIdButton.classList.remove('hidden');
-    elements.saveIdButton.classList.add('hidden');
-    elements.cancelEditButton.classList.add('hidden');
+    // Get fresh references to elements to handle translation interference
+    const peerIdElement = document.getElementById('peer-id');
+    const peerIdEditElement = document.getElementById('peer-id-edit');
+    const editButton = document.getElementById('edit-id');
+    const saveButton = document.getElementById('save-id');
+    const cancelButton = document.getElementById('cancel-edit');
+    
+    if (peerIdElement) peerIdElement.classList.remove('hidden');
+    if (peerIdEditElement) peerIdEditElement.classList.add('hidden');
+    if (editButton) editButton.classList.remove('hidden');
+    if (saveButton) saveButton.classList.add('hidden');
+    if (cancelButton) cancelButton.classList.add('hidden');
 }
 
 // Initialize peer ID editing
 function initPeerIdEditing() {
-    if (elements.editIdButton) {
-        elements.editIdButton.addEventListener('click', startEditingPeerId);
+    // Remove existing event listeners to prevent duplicates
+    const editButton = document.getElementById('edit-id');
+    const saveButton = document.getElementById('save-id');
+    const cancelButton = document.getElementById('cancel-edit');
+    const peerIdEdit = document.getElementById('peer-id-edit');
+    
+    if (editButton) {
+        // Clone and replace to remove old listeners
+        const newEditButton = editButton.cloneNode(true);
+        editButton.parentNode.replaceChild(newEditButton, editButton);
+        newEditButton.addEventListener('click', startEditingPeerId);
     }
-    if (elements.saveIdButton) {
-        elements.saveIdButton.addEventListener('click', saveEditedPeerId);
+    
+    if (saveButton) {
+        const newSaveButton = saveButton.cloneNode(true);
+        saveButton.parentNode.replaceChild(newSaveButton, saveButton);
+        newSaveButton.addEventListener('click', saveEditedPeerId);
     }
-    if (elements.cancelEditButton) {
-        elements.cancelEditButton.addEventListener('click', cancelEditingPeerId);
+    
+    if (cancelButton) {
+        const newCancelButton = cancelButton.cloneNode(true);
+        cancelButton.parentNode.replaceChild(newCancelButton, cancelButton);
+        newCancelButton.addEventListener('click', cancelEditingPeerId);
     }
-    if (elements.peerIdEdit) {
-        elements.peerIdEdit.addEventListener('keypress', (e) => {
+    
+    if (peerIdEdit) {
+        const newPeerIdEdit = peerIdEdit.cloneNode(true);
+        peerIdEdit.parentNode.replaceChild(newPeerIdEdit, peerIdEdit);
+        newPeerIdEdit.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 saveEditedPeerId();
             } else if (e.key === 'Escape') {
@@ -2260,6 +2330,42 @@ function initPeerIdEditing() {
             }
         });
     }
+}
+
+// Function to detect translation changes and reinitialize
+function detectTranslationChanges() {
+    // Check if the page has been translated by looking for translation artifacts
+    const body = document.body;
+    const hasTranslation = body.getAttribute('translated') || 
+                          body.classList.contains('translated') ||
+                          document.documentElement.lang !== 'en';
+    
+    if (hasTranslation) {
+        console.log('🔄 Translation detected, reinitializing peer ID editing system...');
+        // Wait a bit for translation to complete
+        setTimeout(() => {
+            initPeerIdEditing();
+        }, 500);
+    }
+}
+
+// Monitor for translation changes
+let translationObserver = null;
+if (window.MutationObserver) {
+    translationObserver = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            if (mutation.type === 'attributes' && 
+                (mutation.attributeName === 'translated' || 
+                 mutation.attributeName === 'lang')) {
+                detectTranslationChanges();
+            }
+        });
+    });
+    
+    translationObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['translated', 'lang']
+    });
 }
 
 init();
