@@ -108,14 +108,19 @@ header {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     min-width: 80px;
     max-width: 120px;
+    width: auto;
+    height: auto;
     opacity: 0;
     transform: translateY(-10px) scale(0.95);
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: none;
     border: 1px solid rgba(0, 0, 0, 0.08);
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 
 .social-icons.show {
@@ -235,10 +240,15 @@ header {
     white-space: normal;
     word-wrap: break-word;
     overflow-wrap: break-word;
+    word-break: break-word;
     hyphens: none;
     -webkit-hyphens: none;
     -moz-hyphens: none;
     -ms-hyphens: none;
+    text-align: center;
+    display: block;
+    width: 100%;
+    max-width: 100%;
 }
 
 .social-icon:hover {
