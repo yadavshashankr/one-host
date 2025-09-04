@@ -872,6 +872,38 @@ input[type="file"] {
     font-family: inherit !important;
     font-weight: bold !important;
     color: var(--primary-color) !important;
+    font-size: 1rem !important;
+}
+
+/* Mobile and tablet responsive styles for download progress text */
+@media (max-width: 1024px) {
+    .download-progress-text {
+        font-size: 1.1rem !important;
+    }
+    
+    .download-progress-text[translate="no"] {
+        font-size: 1.1rem !important;
+    }
+}
+
+@media (max-width: 768px) {
+    .download-progress-text {
+        font-size: 1.2rem !important;
+    }
+    
+    .download-progress-text[translate="no"] {
+        font-size: 1.2rem !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .download-progress-text {
+        font-size: 1.3rem !important;
+    }
+    
+    .download-progress-text[translate="no"] {
+        font-size: 1.3rem !important;
+    }
 }
 
 /* Protect peer IDs from translation */
