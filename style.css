@@ -175,8 +175,12 @@ header {
     width: 100%;
     min-height: 20px;
     padding: 2px 4px;
-    word-wrap: break-word;
-    hyphens: auto;
+    white-space: normal;
+    word-break: normal;
+    hyphens: none;
+    -webkit-hyphens: none;
+    -moz-hyphens: none;
+    -ms-hyphens: none;
 }
 
 /* Social Media Brand Colors */
@@ -216,6 +220,11 @@ header {
     padding: 12px;
 }
 
+.social-icon.privacy-policy .social-icon-text {
+    line-height: 1.1;
+    white-space: normal;
+}
+
 .social-icon:hover {
     background: rgba(0, 0, 0, 0.05);
 }
@@ -253,15 +262,26 @@ header {
     }
     
     .social-icon-text {
-        font-size: 11px;
+        font-size: 10px;
+        white-space: normal;
+        word-break: normal;
+        hyphens: none;
+        -webkit-hyphens: none;
+        -moz-hyphens: none;
+        -ms-hyphens: none;
     }
     
     .social-icon.guide,
     .social-icon.privacy-policy {
         min-width: 40px;
-        padding: 10px;
+        padding: 8px;
         width: 40px;
         height: 40px;
+    }
+    
+    .social-icon.privacy-policy .social-icon-text {
+        font-size: 9px;
+        line-height: 1.1;
     }
 }
 
