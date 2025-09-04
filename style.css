@@ -104,7 +104,7 @@ header {
     background: white;
     border-radius: 12px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-    padding: 12px;
+    padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -132,8 +132,10 @@ header {
     text-decoration: none;
     color: #666;
     transition: all 0.2s ease;
-    width: 44px;
-    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    width: auto;
+    height: auto;
 }
 
 .social-icon:hover {
@@ -164,14 +166,17 @@ header {
 .social-icon-text {
     font-size: 12px;
     font-weight: 600;
-    line-height: 1;
+    line-height: 1.2;
     text-align: center;
     color: inherit;
     display: flex;
     align-items: center;
     justify-content: center;
     width: 100%;
-    height: 100%;
+    min-height: 20px;
+    padding: 4px 8px;
+    word-wrap: break-word;
+    hyphens: auto;
 }
 
 /* Social Media Brand Colors */
@@ -201,10 +206,14 @@ header {
 
 .social-icon.guide {
     color: #000000;
+    min-width: 60px;
+    padding: 8px 12px;
 }
 
 .social-icon.privacy-policy {
     color: #000000;
+    min-width: 60px;
+    padding: 8px 12px;
 }
 
 .social-icon:hover {
