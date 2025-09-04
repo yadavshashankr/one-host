@@ -110,8 +110,8 @@ header {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    min-width: 80px;
-    max-width: 120px;
+    min-width: 100px;
+    max-width: 140px;
     width: auto;
     height: auto;
     opacity: 0;
@@ -119,8 +119,6 @@ header {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: none;
     border: 1px solid rgba(0, 0, 0, 0.08);
-    word-wrap: break-word;
-    overflow-wrap: break-word;
 }
 
 .social-icons.show {
@@ -227,20 +225,20 @@ header {
 
 .social-icon.privacy-policy {
     color: #000000;
-    min-width: 60px;
-    max-width: 100px;
-    padding: 10px 8px;
+    min-width: 80px;
+    max-width: 120px;
+    padding: 12px 10px;
     width: auto;
     height: auto;
-    min-height: 44px;
+    min-height: 50px;
 }
 
 .social-icon.privacy-policy .social-icon-text {
     line-height: 1.1;
     white-space: normal;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    word-break: break-word;
+    word-wrap: normal;
+    overflow-wrap: normal;
+    word-break: normal;
     hyphens: none;
     -webkit-hyphens: none;
     -moz-hyphens: none;
@@ -270,8 +268,8 @@ header {
     .social-icons {
         top: 46px;
         right: 0;
-        min-width: 70px;
-        max-width: 100px;
+        min-width: 80px;
+        max-width: 120px;
         padding: 10px;
         gap: 6px;
         align-items: center;
@@ -301,12 +299,12 @@ header {
     
     .social-icon.guide,
     .social-icon.privacy-policy {
-        min-width: 50px;
-        max-width: 80px;
-        padding: 8px 6px;
+        min-width: 60px;
+        max-width: 100px;
+        padding: 10px 8px;
         width: auto;
         height: auto;
-        min-height: 40px;
+        min-height: 45px;
     }
     
     .social-icon.privacy-policy .social-icon-text {
