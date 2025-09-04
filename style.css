@@ -203,6 +203,10 @@ header {
     color: #000000;
 }
 
+.social-icon.privacy-policy {
+    color: #000000;
+}
+
 .social-icon:hover {
     background: rgba(0, 0, 0, 0.05);
 }
