@@ -174,7 +174,7 @@ header {
     justify-content: center;
     width: 100%;
     min-height: 20px;
-    padding: 4px 8px;
+    padding: 2px 4px;
     word-wrap: break-word;
     hyphens: auto;
 }
@@ -206,14 +206,14 @@ header {
 
 .social-icon.guide {
     color: #000000;
-    min-width: 60px;
-    padding: 8px 12px;
+    min-width: 44px;
+    padding: 12px;
 }
 
 .social-icon.privacy-policy {
     color: #000000;
-    min-width: 60px;
-    padding: 8px 12px;
+    min-width: 44px;
+    padding: 12px;
 }
 
 .social-icon:hover {
@@ -254,6 +254,14 @@ header {
     
     .social-icon-text {
         font-size: 11px;
+    }
+    
+    .social-icon.guide,
+    .social-icon.privacy-policy {
+        min-width: 40px;
+        padding: 10px;
+        width: 40px;
+        height: 40px;
     }
 }
 
