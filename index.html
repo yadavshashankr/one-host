@@ -164,7 +164,14 @@
     <main>
       <section id="connection-section">
         <div class="peer-info">
-          <h2>Your Peer ID</h2>
+          <h2 class="peer-id-header">
+            <span class="peer-id-title">Your Peer ID</span>
+            <label class="auto-mode-toggle-container">
+              <input type="checkbox" id="auto-mode-switch" class="auto-mode-switch">
+              <span class="toggle-slider"></span>
+              <span class="toggle-label" translate="no">Auto</span>
+            </label>
+          </h2>
           <div class="peer-id-container">
             <div class="peer-id-display">
               <span id="peer-id" translate="no">Generating...</span>

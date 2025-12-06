@@ -111,7 +111,9 @@ const elements = {
     cancelEditButton: document.getElementById('cancel-edit'),
     // Social media elements
     socialToggle: document.getElementById('social-toggle'),
-    socialIcons: document.getElementById('social-icons')
+    socialIcons: document.getElementById('social-icons'),
+    // Auto mode toggle
+    autoModeSwitch: document.getElementById('auto-mode-switch')
 };
 
 // State
@@ -124,6 +126,7 @@ let fileChunks = {}; // Initialize fileChunks object
 let keepAliveInterval = null;
 let connectionTimeouts = new Map();
 let isPageVisible = true;
+let autoModeEnabled = false; // Track auto mode state
 
 // Add file history tracking with Sets for uniqueness
 const fileHistory = {
@@ -1542,6 +1545,7 @@ function init() {
     initConnectionKeepAlive(); // Initialize connection keep-alive system
             // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
+    initAutoModeToggle(); // Initialize auto mode toggle
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
     
     // Add event delegation for peer ID editing to handle translation interference
@@ -1563,6 +1567,26 @@ function init() {
             cancelEditingPeerId();
         }
     });
+}
+
+// Initialize auto mode toggle
+function initAutoModeToggle() {
+    if (!elements.autoModeSwitch) {
+        console.warn('Auto mode switch element not found');
+        return;
+    }
+    
+    // Ensure toggle starts as OFF (default state)
+    elements.autoModeSwitch.checked = false;
+    autoModeEnabled = false;
+    
+    // Add change event listener
+    elements.autoModeSwitch.addEventListener('change', handleAutoModeToggle);
+    
+    // Initialize toggle state based on current connections
+    updateAutoModeToggleState();
+    
+    console.log('Auto mode toggle initialized');
 }
 
 // Social Media Toggle Functionality
@@ -1669,7 +1693,8 @@ function updateConnectionStatus(status, message) {
     } else {
         document.title = 'One-Host';
     }
-    updateEditButtonState(); // Add this line
+    updateEditButtonState();
+    updateAutoModeToggleState(); // Update auto mode toggle state based on connections
 }
 
 // Update files list display
@@ -2181,14 +2206,20 @@ function isEditingAllowed() {
         !statusText.includes('Failed')
     );
     
+    // Cannot edit if auto mode is enabled
+    if (autoModeEnabled) {
+        return false;
+    }
+    
     console.log('🔍 isEditingAllowed check:', {
         statusText: statusText,
         hasConnections: hasConnections,
         isReadyStatus: isReadyStatus,
-        result: isReadyStatus && !hasConnections
+        autoModeEnabled: autoModeEnabled,
+        result: isReadyStatus && !hasConnections && !autoModeEnabled
     });
     
-    return isReadyStatus && !hasConnections;
+    return isReadyStatus && !hasConnections && !autoModeEnabled;
 }
 
 // Update edit button state based on connection status
@@ -2196,7 +2227,241 @@ function updateEditButtonState() {
     if (elements.editIdButton) {
         const canEdit = isEditingAllowed();
         elements.editIdButton.disabled = !canEdit;
-        elements.editIdButton.title = canEdit ? 'Edit ID' : 'Cannot edit ID while connected';
+        if (autoModeEnabled) {
+            elements.editIdButton.title = 'Cannot edit ID in auto mode';
+        } else {
+            elements.editIdButton.title = canEdit ? 'Edit ID' : 'Cannot edit ID while connected';
+        }
+    }
+}
+
+// Update auto mode toggle state based on connections
+function updateAutoModeToggleState() {
+    if (elements.autoModeSwitch) {
+        const hasConnections = connections.size > 0;
+        elements.autoModeSwitch.disabled = hasConnections;
+    }
+}
+
+// Switch to auto mode
+async function switchToAutoMode() {
+    console.log('🔄 Switching to auto mode...');
+    
+    // Check if currently editing - cancel edit mode first
+    const peerIdEditElement = document.getElementById('peer-id-edit');
+    if (peerIdEditElement && !peerIdEditElement.classList.contains('hidden')) {
+        cancelEditingPeerId();
+    }
+    
+    try {
+        // Show loading state
+        updateConnectionStatus('connecting', 'Switching to auto mode...');
+        
+        // Destroy existing peer if any
+        if (peer) {
+            peer._isChangingId = true;
+            peer.destroy();
+            peer = null;
+        }
+        
+        // Clear connections
+        connections.clear();
+        
+        // Set auto mode state
+        autoModeEnabled = true;
+        
+        // Initialize new peer with "automatic-mode" ID
+        peer = new Peer('automatic-mode', {
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        });
+        
+        setupPeerHandlers();
+        
+        // Wait for the peer to be ready
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Timeout waiting for peer to open'));
+            }, 10000);
+            
+            peer.once('open', () => {
+                clearTimeout(timeout);
+                resolve();
+            });
+            
+            peer.once('error', (err) => {
+                clearTimeout(timeout);
+                reject(err);
+            });
+        });
+        
+        // Update UI - peer ID should already be set in peer.on('open')
+        // But we'll ensure it's set to "automatic-mode"
+        const peerIdElement = document.getElementById('peer-id');
+        if (peerIdElement) {
+            peerIdElement.textContent = 'automatic-mode';
+        }
+        
+        // Generate QR code for "automatic-mode"
+        generateQRCode('automatic-mode');
+        
+        // Disable edit button
+        updateEditButtonState();
+        
+        // Update toggle visual state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = true;
+        }
+        
+        showNotification('Auto mode enabled', 'success');
+        
+        // Track auto mode enable
+        Analytics.track('auto_mode_enabled', {
+            device_type: Analytics.getDeviceType()
+        });
+        
+    } catch (error) {
+        console.error('Error switching to auto mode:', error);
+        autoModeEnabled = false;
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+        }
+        
+        let errorMessage = 'Failed to enable auto mode';
+        if (error.message.includes('unavailable-id')) {
+            errorMessage = 'Auto mode ID is already taken';
+        }
+        
+        showNotification(errorMessage, 'error');
+        updateConnectionStatus('', 'Ready to connect');
+        
+        // Reinitialize with auto-generated ID
+        initPeerJS();
+    }
+}
+
+// Switch from auto mode
+async function switchFromAutoMode() {
+    console.log('🔄 Switching from auto mode...');
+    
+    try {
+        // Show loading state
+        updateConnectionStatus('connecting', 'Switching from auto mode...');
+        
+        // Destroy existing peer if any
+        if (peer) {
+            peer._isChangingId = true;
+            peer.destroy();
+            peer = null;
+        }
+        
+        // Clear connections
+        connections.clear();
+        
+        // Set auto mode state
+        autoModeEnabled = false;
+        
+        // Initialize new peer with auto-generated ID (no custom ID)
+        peer = new Peer({
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        });
+        
+        setupPeerHandlers();
+        
+        // Wait for the peer to be ready - the ID will be auto-generated
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Timeout waiting for peer to open'));
+            }, 10000);
+            
+            peer.once('open', (id) => {
+                clearTimeout(timeout);
+                resolve(id);
+            });
+            
+            peer.once('error', (err) => {
+                clearTimeout(timeout);
+                reject(err);
+            });
+        });
+        
+        // Peer ID will be set automatically in peer.on('open') handler
+        // But we'll ensure QR code is updated
+        
+        // Enable edit button
+        updateEditButtonState();
+        
+        // Update toggle visual state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+        }
+        
+        showNotification('Auto mode disabled', 'success');
+        
+        // Track auto mode disable
+        Analytics.track('auto_mode_disabled', {
+            device_type: Analytics.getDeviceType()
+        });
+        
+    } catch (error) {
+        console.error('Error switching from auto mode:', error);
+        autoModeEnabled = true; // Revert state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = true;
+        }
+        
+        showNotification('Failed to disable auto mode', 'error');
+        updateConnectionStatus('', 'Ready to connect');
+    }
+}
+
+// Handle auto mode toggle
+async function handleAutoModeToggle() {
+    const switchElement = elements.autoModeSwitch;
+    if (!switchElement) {
+        console.error('Auto mode switch element not found');
+        return;
+    }
+    
+    // Check if toggle is disabled (has connections)
+    if (switchElement.disabled) {
+        showNotification('Cannot change auto mode while connected to peers', 'warning');
+        // Revert toggle state
+        switchElement.checked = !switchElement.checked;
+        return;
+    }
+    
+    const shouldEnable = switchElement.checked;
+    
+    if (shouldEnable) {
+        // Check if connections exist
+        if (connections.size > 0) {
+            showNotification('Cannot enable auto mode while connected to peers', 'warning');
+            switchElement.checked = false;
+            return;
+        }
+        
+        await switchToAutoMode();
+    } else {
+        // Check if connections exist
+        if (connections.size > 0) {
+            showNotification('Cannot disable auto mode while connected to peers', 'warning');
+            switchElement.checked = true;
+            return;
+        }
+        
+        await switchFromAutoMode();
     }
 }
 
