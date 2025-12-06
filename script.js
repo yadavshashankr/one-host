@@ -2269,7 +2269,7 @@ function autoConnectToPeer(peerId) {
     }
     
     // Show notification
-    showNotification(`Auto mode peer ID taken. Connecting to existing peer...`, 'info');
+    showNotification(`Auto mode detected. Connecting...`, 'info');
     
     // Wait a moment for UI to update, then trigger connection
     setTimeout(() => {
