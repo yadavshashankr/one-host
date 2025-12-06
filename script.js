@@ -2243,6 +2243,208 @@ function updateAutoModeToggleState() {
     }
 }
 
+// Helper function to check if IP is public (not private)
+function isPublicIP(ip) {
+    if (!ip || typeof ip !== 'string') return false;
+    
+    // Private IP ranges
+    if (ip.startsWith('192.168.')) return false;
+    if (ip.startsWith('10.')) return false;
+    if (ip.startsWith('172.')) {
+        const secondOctet = parseInt(ip.split('.')[1]);
+        if (secondOctet >= 16 && secondOctet <= 31) return false;
+    }
+    if (ip.startsWith('127.')) return false; // Loopback
+    if (ip === '0.0.0.0') return false;
+    
+    // IPv4 format validation
+    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipv4Regex.test(ip)) return false;
+    
+    // Check each octet is 0-255
+    const octets = ip.split('.');
+    for (const octet of octets) {
+        const num = parseInt(octet);
+        if (num < 0 || num > 255) return false;
+    }
+    
+    return true; // It's a public IP
+}
+
+// Get public IP address using STUN server (ICE candidates)
+function getPublicIPViaSTUN() {
+    return new Promise((resolve, reject) => {
+        const pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        });
+        
+        const publicIPs = new Set(); // Use Set to avoid duplicates
+        let candidateGatheringComplete = false;
+        let hasPublicIP = false;
+        
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const candidate = event.candidate.candidate;
+                const candidateType = event.candidate.type;
+                
+                // Check for server reflexive candidates (public IP)
+                if (candidateType === 'srflx') {
+                    // Parse the candidate string
+                    // Format examples:
+                    // "candidate:1 1 UDP 2130706431 203.0.113.1 54400 typ srflx raddr 192.168.1.1 rport 54400"
+                    // The public IP is typically the 5th field (index 4)
+                    const parts = candidate.split(' ');
+                    if (parts.length >= 5) {
+                        const ip = parts[4]; // 5th element (0-indexed: 4)
+                        
+                        // Validate it's a public IP
+                        if (isPublicIP(ip)) {
+                            publicIPs.add(ip);
+                            hasPublicIP = true;
+                            console.log('✅ Public IP found via STUN:', ip);
+                        }
+                    }
+                    
+                    // Also try regex fallback
+                    const ipMatch = candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                    if (ipMatch) {
+                        const ip = ipMatch[1];
+                        if (isPublicIP(ip)) {
+                            publicIPs.add(ip);
+                            hasPublicIP = true;
+                        }
+                    }
+                }
+            } else {
+                // All candidates gathered
+                candidateGatheringComplete = true;
+                if (hasPublicIP && publicIPs.size > 0) {
+                    const publicIP = Array.from(publicIPs)[0]; // Get first public IP
+                    pc.close();
+                    resolve(publicIP);
+                } else {
+                    pc.close();
+                    reject(new Error('No public IP found in ICE candidates'));
+                }
+            }
+        };
+        
+        // Error handling
+        pc.onicecandidateerror = (error) => {
+            console.warn('ICE candidate error:', error);
+        };
+        
+        // Create offer to trigger candidate gathering
+        try {
+            pc.createDataChannel('test');
+            pc.createOffer()
+                .then(offer => {
+                    return pc.setLocalDescription(offer);
+                })
+                .catch(error => {
+                    console.error('Error in offer/answer exchange:', error);
+                    pc.close();
+                    reject(error);
+                });
+        } catch (error) {
+            console.error('Error setting up RTCPeerConnection:', error);
+            pc.close();
+            reject(error);
+        }
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!candidateGatheringComplete) {
+                if (hasPublicIP && publicIPs.size > 0) {
+                    const publicIP = Array.from(publicIPs)[0];
+                    pc.close();
+                    resolve(publicIP);
+                } else {
+                    pc.close();
+                    reject(new Error('Timeout: No public IP found in ICE candidates'));
+                }
+            }
+        }, 5000);
+    });
+}
+
+// Get public IP - Primary: STUN, Fallback: External API, Final: Timestamp
+async function getPublicIP() {
+    // Try STUN method first (preferred)
+    try {
+        console.log('🌐 Attempting to get public IP via STUN...');
+        const publicIP = await getPublicIPViaSTUN();
+        console.log('✅ Public IP retrieved via STUN:', publicIP);
+        return publicIP;
+    } catch (stunError) {
+        console.warn('⚠️ STUN method failed, trying external API:', stunError);
+        
+        // Fallback to external API
+        try {
+            // Use AbortController for timeout (more compatible than AbortSignal.timeout)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            const response = await fetch('https://api.ipify.org?format=json', {
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (data.ip && isPublicIP(data.ip)) {
+                console.log('✅ Public IP retrieved via API:', data.ip);
+                return data.ip;
+            }
+        } catch (apiError) {
+            console.warn('⚠️ External API also failed:', apiError);
+        }
+        
+        // Final fallback: throw error (caller will use timestamp)
+        throw new Error('All methods failed to retrieve public IP');
+    }
+}
+
+// Convert IP to peer ID format (first 8 digits)
+function formatIPForPeerID(ip) {
+    if (!ip) {
+        throw new Error('IP address is required');
+    }
+    
+    // Handle IPv4 (e.g., "103.142.11.33" -> "10314211")
+    if (ip.includes('.')) {
+        const parts = ip.split('.');
+        if (parts.length === 4) {
+            // Remove dots and take first 8 digits
+            const digits = parts.join('').substring(0, 8);
+            return digits.padEnd(8, '0'); // Pad if less than 8 digits
+        }
+    }
+    
+    // Handle IPv6 (e.g., "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+    if (ip.includes(':')) {
+        // Remove colons and take first 8 numeric characters
+        const hex = ip.replace(/:/g, '').substring(0, 8);
+        // Extract numeric digits
+        const digits = hex.replace(/[^0-9]/g, '').substring(0, 8);
+        if (digits.length < 8) {
+            // If not enough digits, use hex characters converted to decimal
+            const hexDigits = hex.substring(0, 8).split('').map(c => {
+                const num = parseInt(c, 16);
+                return isNaN(num) ? '0' : num.toString();
+            }).join('').substring(0, 8);
+            return hexDigits.padEnd(8, '0');
+        }
+        return digits;
+    }
+    
+    // Fallback: extract first 8 numeric digits
+    const digits = ip.replace(/[^0-9]/g, '').substring(0, 8);
+    return digits.padEnd(8, '0');
+}
+
 // Switch to auto mode
 async function switchToAutoMode() {
     console.log('🔄 Switching to auto mode...');
@@ -2257,6 +2459,30 @@ async function switchToAutoMode() {
         // Show loading state
         updateConnectionStatus('connecting', 'Switching to auto mode...');
         
+        // Fetch public IP address
+        updateConnectionStatus('connecting', 'Fetching network information...');
+        let publicIP;
+        try {
+            publicIP = await getPublicIP();
+        } catch (ipError) {
+            console.error('❌ Failed to fetch public IP:', ipError);
+            throw new Error('Failed to enable auto mode');
+        }
+        
+        // Format IP for peer ID
+        let peerIdSuffix;
+        try {
+            peerIdSuffix = formatIPForPeerID(publicIP);
+            console.log('✅ Public IP retrieved:', publicIP, '→ Suffix:', peerIdSuffix);
+        } catch (formatError) {
+            console.error('❌ Failed to format IP:', formatError);
+            throw new Error('Failed to enable auto mode');
+        }
+        
+        // Generate peer ID
+        const autoModePeerId = `automatic-mode-${peerIdSuffix}`;
+        console.log('🆔 Generated auto mode peer ID:', autoModePeerId);
+        
         // Destroy existing peer if any
         if (peer) {
             peer._isChangingId = true;
@@ -2270,8 +2496,8 @@ async function switchToAutoMode() {
         // Set auto mode state
         autoModeEnabled = true;
         
-        // Initialize new peer with "automatic-mode" ID
-        peer = new Peer('automatic-mode', {
+        // Initialize new peer with dynamic ID
+        peer = new Peer(autoModePeerId, {
             debug: 2,
             config: {
                 iceServers: [
@@ -2289,9 +2515,9 @@ async function switchToAutoMode() {
                 reject(new Error('Timeout waiting for peer to open'));
             }, 10000);
             
-            peer.once('open', () => {
+            peer.once('open', (id) => {
                 clearTimeout(timeout);
-                resolve();
+                resolve(id);
             });
             
             peer.once('error', (err) => {
@@ -2301,14 +2527,14 @@ async function switchToAutoMode() {
         });
         
         // Update UI - peer ID should already be set in peer.on('open')
-        // But we'll ensure it's set to "automatic-mode"
+        // But we'll ensure it's set correctly
         const peerIdElement = document.getElementById('peer-id');
         if (peerIdElement) {
-            peerIdElement.textContent = 'automatic-mode';
+            peerIdElement.textContent = autoModePeerId;
         }
         
-        // Generate QR code for "automatic-mode"
-        generateQRCode('automatic-mode');
+        // Generate QR code
+        generateQRCode(autoModePeerId);
         
         // Disable edit button
         updateEditButtonState();
@@ -2322,7 +2548,9 @@ async function switchToAutoMode() {
         
         // Track auto mode enable
         Analytics.track('auto_mode_enabled', {
-            device_type: Analytics.getDeviceType()
+            device_type: Analytics.getDeviceType(),
+            public_ip: publicIP,
+            peer_id_suffix: peerIdSuffix
         });
         
     } catch (error) {
