@@ -2243,6 +2243,52 @@ function updateAutoModeToggleState() {
     }
 }
 
+// Auto-connect to a peer when auto mode peer ID is taken
+function autoConnectToPeer(peerId) {
+    console.log('🔗 Auto-connecting to peer:', peerId);
+    
+    // Check if already connected to this peer
+    if (connections.has(peerId)) {
+        console.log('Already connected to peer:', peerId);
+        showNotification('Already connected to this peer', 'info');
+        return;
+    }
+    
+    // Check if peer is ready
+    if (!peer || !peer.id) {
+        console.warn('Peer not ready yet, waiting...');
+        // Wait a bit and try again
+        setTimeout(() => autoConnectToPeer(peerId), 1000);
+        return;
+    }
+    
+    // Fill input field
+    if (elements.remotePeerId) {
+        elements.remotePeerId.value = peerId;
+        console.log('✅ Auto-filled peer ID:', peerId);
+    }
+    
+    // Show notification
+    showNotification(`Auto mode peer ID taken. Connecting to existing peer...`, 'info');
+    
+    // Wait a moment for UI to update, then trigger connection
+    setTimeout(() => {
+        // Check again if already connected (user might have manually connected)
+        if (connections.has(peerId)) {
+            console.log('Already connected (manual connection detected)');
+            return;
+        }
+        
+        // Trigger connect button click
+        if (elements.connectButton) {
+            console.log('🔄 Triggering connection to:', peerId);
+            elements.connectButton.click();
+        } else {
+            console.error('Connect button not found');
+        }
+    }, 500);
+}
+
 // Helper function to check if IP is public (not private)
 function isPublicIP(ip) {
     if (!ip || typeof ip !== 'string') return false;
@@ -2455,6 +2501,9 @@ async function switchToAutoMode() {
         cancelEditingPeerId();
     }
     
+    // Store attempted peer ID for error handling
+    let attemptedPeerId = null;
+    
     try {
         // Show loading state
         updateConnectionStatus('connecting', 'Switching to auto mode...');
@@ -2481,6 +2530,7 @@ async function switchToAutoMode() {
         
         // Generate peer ID
         const autoModePeerId = `automatic-mode-${peerIdSuffix}`;
+        attemptedPeerId = autoModePeerId; // Store for error handling
         console.log('🆔 Generated auto mode peer ID:', autoModePeerId);
         
         // Destroy existing peer if any
@@ -2522,6 +2572,8 @@ async function switchToAutoMode() {
             
             peer.once('error', (err) => {
                 clearTimeout(timeout);
+                // Store the attempted peer ID in the error for later use
+                err.attemptedPeerId = autoModePeerId;
                 reject(err);
             });
         });
@@ -2555,16 +2607,65 @@ async function switchToAutoMode() {
         
     } catch (error) {
         console.error('Error switching to auto mode:', error);
+        
+        // Check if this is an "ID taken" error
+        const isIdTaken = error.type === 'unavailable-id' || 
+                         error.message.includes('is taken') || 
+                         error.message.includes('unavailable-id') ||
+                         (error.attemptedPeerId && error.type === 'unavailable-id');
+        
+        if (isIdTaken) {
+            // Get the attempted peer ID from error or stored value
+            const takenPeerId = error.attemptedPeerId || attemptedPeerId;
+            if (!takenPeerId) {
+                console.error('No peer ID found for auto-connect');
+                // Fall through to normal error handling
+            } else {
+                console.log('🔗 Auto mode peer ID taken:', takenPeerId, '- Attempting auto-connect');
+                
+                // Reset auto mode state
+                autoModeEnabled = false;
+                if (elements.autoModeSwitch) {
+                    elements.autoModeSwitch.checked = false;
+                }
+                
+                // Reinitialize with auto-generated ID (we need a peer to connect from)
+                updateConnectionStatus('', 'Ready to connect');
+                initPeerJS();
+                
+                // Wait for peer to be ready, then auto-connect
+                // We'll use a flag to detect when peer is ready
+                const checkPeerReady = () => {
+                    if (peer && peer.id && !peer.destroyed) {
+                        console.log('✅ Peer ready, auto-connecting to:', takenPeerId);
+                        autoConnectToPeer(takenPeerId);
+                    } else {
+                        // Wait a bit more
+                        setTimeout(checkPeerReady, 500);
+                    }
+                };
+                
+                // Start checking after a short delay
+                setTimeout(checkPeerReady, 1000);
+                
+                // Track auto-connect attempt
+                Analytics.track('auto_mode_auto_connect', {
+                    device_type: Analytics.getDeviceType(),
+                    target_peer_id: takenPeerId,
+                    reason: 'peer_id_taken'
+                });
+                
+                return; // Don't show error, auto-connect will handle notification
+            }
+        }
+        
+        // For other errors, show normal error handling
         autoModeEnabled = false;
         if (elements.autoModeSwitch) {
             elements.autoModeSwitch.checked = false;
         }
         
         let errorMessage = 'Failed to enable auto mode';
-        if (error.message.includes('unavailable-id')) {
-            errorMessage = 'Auto mode ID is already taken';
-        }
-        
         showNotification(errorMessage, 'error');
         updateConnectionStatus('', 'Ready to connect');
         
