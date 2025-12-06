@@ -387,6 +387,16 @@ h3 {
     transform: translateX(20px);
 }
 
+/* Orange color for peer mode (connected to auto mode peer, not hosting) */
+.auto-mode-switch.auto-mode-peer:checked + .toggle-slider {
+    background-color: var(--warning-color); /* Orange: #ff9800 */
+}
+
+/* Optional: Hover state for orange */
+.auto-mode-switch.auto-mode-peer:checked + .toggle-slider:hover {
+    background-color: #f57c00; /* Darker orange on hover */
+}
+
 .auto-mode-switch:disabled + .toggle-slider {
     opacity: 0.5;
     cursor: not-allowed;

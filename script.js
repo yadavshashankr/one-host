@@ -127,6 +127,8 @@ let keepAliveInterval = null;
 let connectionTimeouts = new Map();
 let isPageVisible = true;
 let autoModeEnabled = false; // Track auto mode state
+let autoModeConnectedAsPeer = false; // Track if connected to auto mode peer (not hosting)
+let autoModePeerId = null; // Store the auto mode peer ID we're connected to
 
 // Add file history tracking with Sets for uniqueness
 const fileHistory = {
@@ -661,6 +663,18 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
 
     conn.on('close', () => {
         console.log('Connection closed with:', conn.peer);
+        
+        // Check if this was the auto mode peer connection
+        if (autoModeConnectedAsPeer && conn.peer === autoModePeerId) {
+            console.log('🔄 Auto mode peer disconnected, resetting peer mode state');
+            autoModeConnectedAsPeer = false;
+            autoModePeerId = null;
+            if (elements.autoModeSwitch) {
+                elements.autoModeSwitch.checked = false;
+                elements.autoModeSwitch.classList.remove('auto-mode-peer');
+            }
+        }
+        
         connections.delete(conn.peer);
         
         // Clear timeout for this connection
@@ -706,6 +720,17 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
 
     conn.on('close', () => {
         console.log('Connection closed with:', conn.peer);
+        
+        // Check if this was the auto mode peer connection
+        if (autoModeConnectedAsPeer && conn.peer === autoModePeerId) {
+            console.log('🔄 Auto mode peer disconnected, resetting peer mode state');
+            autoModeConnectedAsPeer = false;
+            autoModePeerId = null;
+            if (elements.autoModeSwitch) {
+                elements.autoModeSwitch.checked = false;
+                elements.autoModeSwitch.classList.remove('auto-mode-peer');
+            }
+        }
         
         // Clear connection timeout if provided
         if (connectionTimeout) {
@@ -2239,7 +2264,12 @@ function updateEditButtonState() {
 function updateAutoModeToggleState() {
     if (elements.autoModeSwitch) {
         const hasConnections = connections.size > 0;
-        elements.autoModeSwitch.disabled = hasConnections;
+        // Don't disable if in peer mode (user should be able to toggle off)
+        if (autoModeConnectedAsPeer) {
+            elements.autoModeSwitch.disabled = false;
+        } else {
+            elements.autoModeSwitch.disabled = hasConnections;
+        }
     }
 }
 
@@ -2260,6 +2290,18 @@ function autoConnectToPeer(peerId) {
         // Wait a bit and try again
         setTimeout(() => autoConnectToPeer(peerId), 1000);
         return;
+    }
+    
+    // Set peer mode state
+    autoModeConnectedAsPeer = true;
+    autoModePeerId = peerId;
+    
+    // Update switch to ON and add peer mode styling
+    if (elements.autoModeSwitch) {
+        elements.autoModeSwitch.checked = true;
+        elements.autoModeSwitch.disabled = false; // Keep enabled so user can toggle off
+        elements.autoModeSwitch.classList.add('auto-mode-peer');
+        console.log('✅ Set switch to peer mode (orange)');
     }
     
     // Fill input field
@@ -2755,6 +2797,71 @@ async function switchFromAutoMode() {
     }
 }
 
+// Switch from peer mode (disconnect from auto mode peer)
+async function switchFromPeerMode() {
+    console.log('🔄 Switching off from peer mode...');
+    
+    try {
+        // Disconnect from auto mode peer
+        if (autoModePeerId && connections.has(autoModePeerId)) {
+            const conn = connections.get(autoModePeerId);
+            if (conn && conn.open) {
+                conn.close();
+            }
+            connections.delete(autoModePeerId);
+            console.log('✅ Disconnected from auto mode peer:', autoModePeerId);
+        }
+        
+        // Reset peer mode state
+        const disconnectedPeerId = autoModePeerId;
+        autoModeConnectedAsPeer = false;
+        autoModePeerId = null;
+        
+        // Destroy existing peer
+        if (peer) {
+            peer._isChangingId = true;
+            peer.destroy();
+            peer = null;
+        }
+        
+        // Clear all connections
+        connections.clear();
+        
+        // Reinitialize with auto-generated ID
+        updateConnectionStatus('connecting', 'Disconnecting from auto mode peer...');
+        initPeerJS();
+        
+        // Wait for peer to be ready
+        // peer.on('open') will handle UI updates automatically
+        
+        // Update switch state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+            elements.autoModeSwitch.classList.remove('auto-mode-peer');
+        }
+        
+        showNotification('Disconnected from auto mode peer', 'success');
+        
+        // Track disconnect
+        Analytics.track('auto_mode_peer_disconnected', {
+            device_type: Analytics.getDeviceType(),
+            peer_id: disconnectedPeerId
+        });
+        
+    } catch (error) {
+        console.error('Error switching from peer mode:', error);
+        showNotification('Failed to disconnect from auto mode peer', 'error');
+        
+        // Reset state even on error
+        autoModeConnectedAsPeer = false;
+        autoModePeerId = null;
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+            elements.autoModeSwitch.classList.remove('auto-mode-peer');
+        }
+    }
+}
+
 // Handle auto mode toggle
 async function handleAutoModeToggle() {
     const switchElement = elements.autoModeSwitch;
@@ -2763,7 +2870,7 @@ async function handleAutoModeToggle() {
         return;
     }
     
-    // Check if toggle is disabled (has connections)
+    // Check if toggle is disabled (has other connections, not peer mode)
     if (switchElement.disabled) {
         showNotification('Cannot change auto mode while connected to peers', 'warning');
         // Revert toggle state
@@ -2772,6 +2879,13 @@ async function handleAutoModeToggle() {
     }
     
     const shouldEnable = switchElement.checked;
+    
+    // Check if currently in peer mode and user wants to turn off
+    if (autoModeConnectedAsPeer && !shouldEnable) {
+        console.log('🔄 User toggling off from peer mode');
+        await switchFromPeerMode();
+        return;
+    }
     
     if (shouldEnable) {
         // Check if connections exist
