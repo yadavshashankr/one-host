@@ -406,13 +406,22 @@ h3 {
 /* Responsive adjustments */
 @media (max-width: 480px) {
     .peer-id-header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 12px;
+        /* Keep flex-direction: row to maintain same line */
+        gap: 8px;
+    }
+
+    .peer-id-title {
+        font-size: 1.2rem; /* Slightly smaller on mobile */
+        flex-shrink: 1; /* Allow text to shrink if needed */
+        min-width: 0; /* Allow text truncation if necessary */
     }
 
     .auto-mode-toggle-container {
-        align-self: flex-end;
+        flex-shrink: 0; /* Prevent toggle from shrinking */
+    }
+
+    .toggle-label {
+        font-size: 0.85rem; /* Slightly smaller label on mobile */
     }
 }
 
