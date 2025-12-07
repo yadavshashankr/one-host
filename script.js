@@ -1571,6 +1571,12 @@ function init() {
             // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
     initAutoModeToggle(); // Initialize auto mode toggle
+    
+    // Retrieve private IP on page load and update auto mode button visibility
+    // Button will only be shown after WiFi/Cellular decision is made
+    console.log('🌐 Retrieving private IP on page load to determine connection type...');
+    updateAutoModeButtonVisibility();
+    
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
     
     // Add event delegation for peer ID editing to handle translation interference
@@ -1604,6 +1610,13 @@ function initAutoModeToggle() {
     // Ensure toggle starts as OFF (default state)
     elements.autoModeSwitch.checked = false;
     autoModeEnabled = false;
+    
+    // Hide auto mode button initially until WiFi/Cellular decision is made
+    const autoModeContainer = elements.autoModeSwitch.closest('.auto-mode-toggle-container');
+    if (autoModeContainer) {
+        autoModeContainer.style.display = 'none';
+        console.log('🔒 Auto mode button hidden initially (waiting for connection type detection)');
+    }
     
     // Add change event listener
     elements.autoModeSwitch.addEventListener('change', handleAutoModeToggle);
@@ -2457,6 +2470,187 @@ function getPublicIPViaSTUN() {
             }
         }, 5000);
     });
+}
+
+// Get private IP address using WebRTC ICE candidates
+function getPrivateIPViaSTUN() {
+    return new Promise((resolve, reject) => {
+        const pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        });
+        
+        const privateIPs = new Set(); // Use Set to avoid duplicates
+        let candidateGatheringComplete = false;
+        let hasPrivateIP = false;
+        
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const candidate = event.candidate.candidate;
+                const candidateType = event.candidate.type;
+                
+                // Check for host candidates (private/local IP)
+                if (candidateType === 'host') {
+                    // Parse the candidate string
+                    // Format examples:
+                    // "candidate:1 1 UDP 2130706431 192.168.1.100 54400 typ host"
+                    // The private IP is typically the 5th field (index 4)
+                    const parts = candidate.split(' ');
+                    if (parts.length >= 5) {
+                        const ip = parts[4]; // 5th element (0-indexed: 4)
+                        
+                        // Validate it's a private IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+                        if (ip && (ip.startsWith('192.168.') || ip.startsWith('10.') || 
+                            (ip.startsWith('172.') && parseInt(ip.split('.')[1]) >= 16 && parseInt(ip.split('.')[1]) <= 31))) {
+                            privateIPs.add(ip);
+                            hasPrivateIP = true;
+                            console.log('✅ Private IP found via STUN:', ip);
+                        }
+                    }
+                    
+                    // Also try regex fallback
+                    const ipMatch = candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                    if (ipMatch) {
+                        const ip = ipMatch[1];
+                        if (ip && (ip.startsWith('192.168.') || ip.startsWith('10.') || 
+                            (ip.startsWith('172.') && parseInt(ip.split('.')[1]) >= 16 && parseInt(ip.split('.')[1]) <= 31))) {
+                            privateIPs.add(ip);
+                            hasPrivateIP = true;
+                        }
+                    }
+                }
+            } else {
+                // All candidates gathered
+                candidateGatheringComplete = true;
+                if (hasPrivateIP && privateIPs.size > 0) {
+                    const privateIP = Array.from(privateIPs)[0]; // Get first private IP
+                    pc.close();
+                    resolve(privateIP);
+                } else {
+                    pc.close();
+                    reject(new Error('No private IP found in ICE candidates'));
+                }
+            }
+        };
+        
+        // Error handling
+        pc.onicecandidateerror = (error) => {
+            console.warn('ICE candidate error:', error);
+        };
+        
+        // Create offer to trigger candidate gathering
+        try {
+            pc.createDataChannel('test');
+            pc.createOffer()
+                .then(offer => {
+                    return pc.setLocalDescription(offer);
+                })
+                .catch(error => {
+                    console.error('Error in offer/answer exchange:', error);
+                    pc.close();
+                    reject(error);
+                });
+        } catch (error) {
+            console.error('Error setting up RTCPeerConnection:', error);
+            pc.close();
+            reject(error);
+        }
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!candidateGatheringComplete) {
+                if (hasPrivateIP && privateIPs.size > 0) {
+                    const privateIP = Array.from(privateIPs)[0];
+                    pc.close();
+                    resolve(privateIP);
+                } else {
+                    pc.close();
+                    reject(new Error('Timeout: No private IP found in ICE candidates'));
+                }
+            }
+        }, 5000);
+    });
+}
+
+// Get private IP address
+async function getPrivateIP() {
+    try {
+        console.log('🌐 Attempting to get private IP via STUN...');
+        const privateIP = await getPrivateIPViaSTUN();
+        console.log('✅ Private IP retrieved via STUN:', privateIP);
+        return privateIP;
+    } catch (error) {
+        console.warn('⚠️ Failed to retrieve private IP:', error);
+        return null;
+    }
+}
+
+// Check if device is connected via WiFi (private IP starts with 192)
+async function isOnWiFi() {
+    try {
+        const privateIP = await getPrivateIP();
+        if (!privateIP) {
+            console.warn('⚠️ Could not determine private IP, defaulting to hide auto mode');
+            return false;
+        }
+        
+        // Check if private IP starts with "192" (as per user requirement)
+        const isWiFi = privateIP.startsWith('192');
+        console.log(`📶 Connection type detected: ${isWiFi ? 'WiFi' : 'Cellular'} (Private IP: ${privateIP})`);
+        return isWiFi;
+    } catch (error) {
+        console.error('❌ Error checking WiFi connection:', error);
+        return false; // Default to hide auto mode on error
+    }
+}
+
+// Update auto mode button visibility based on WiFi connection
+// Only shows button after WiFi/Cellular decision is made
+async function updateAutoModeButtonVisibility() {
+    // Use the existing auto mode switch element to find its container
+    if (!elements.autoModeSwitch) {
+        console.warn('Auto mode switch element not found');
+        return;
+    }
+    
+    const autoModeContainer = elements.autoModeSwitch.closest('.auto-mode-toggle-container');
+    if (!autoModeContainer) {
+        console.warn('Auto mode toggle container not found');
+        return;
+    }
+    
+    // Ensure button is hidden while processing
+    autoModeContainer.style.display = 'none';
+    
+    try {
+        // Check WiFi connection using private IP
+        const isWiFiConnected = await isOnWiFi();
+        
+        if (isWiFiConnected) {
+            // Show auto mode button only after WiFi is confirmed
+            autoModeContainer.style.display = '';
+            console.log('✅ Auto mode button shown (WiFi connected)');
+        } else {
+            // Hide auto mode button (cellular or other connection)
+            autoModeContainer.style.display = 'none';
+            console.log('❌ Auto mode button hidden (not on WiFi - Cellular/Other)');
+            
+            // Also disable auto mode if it was enabled
+            if (autoModeEnabled) {
+                console.log('🔄 Auto mode was enabled, disabling due to non-WiFi connection');
+                if (elements.autoModeSwitch) {
+                    elements.autoModeSwitch.checked = false;
+                }
+                autoModeEnabled = false;
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error updating auto mode button visibility:', error);
+        // Keep button hidden on error
+        autoModeContainer.style.display = 'none';
+    }
 }
 
 // Get public IP - Primary: STUN, Fallback: External API, Final: Timestamp
