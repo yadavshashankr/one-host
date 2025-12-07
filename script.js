@@ -2311,12 +2311,13 @@ function autoConnectToPeer(peerId) {
     autoModeConnectedAsPeer = true;
     autoModePeerId = peerId;
     
-    // Update switch to ON and add peer mode styling
+    // Update switch to ON and add peer mode styling (if not already set)
+    // Note: Switch may already be ON and have orange class from error handler
     if (elements.autoModeSwitch) {
-        elements.autoModeSwitch.checked = true;
+        elements.autoModeSwitch.checked = true; // Ensure switch is ON
         elements.autoModeSwitch.disabled = false; // Keep enabled so user can toggle off
-        elements.autoModeSwitch.classList.add('auto-mode-peer');
-        console.log('✅ Set switch to peer mode (orange)');
+        elements.autoModeSwitch.classList.add('auto-mode-peer'); // Add orange class if not already present
+        console.log('✅ Switch set to peer mode (orange)');
     }
     
     // Fill input field
@@ -2950,11 +2951,16 @@ async function switchToAutoMode() {
             } else {
                 console.log('🔗 Auto mode peer ID taken:', takenPeerId, '- Attempting auto-connect');
                 
-                // Reset auto mode state
-                autoModeEnabled = false;
+                // Keep switch ON and change to orange (peer mode) immediately
+                // Don't turn off the switch - just change color to indicate peer mode
                 if (elements.autoModeSwitch) {
-                    elements.autoModeSwitch.checked = false;
+                    elements.autoModeSwitch.checked = true; // Keep switch ON
+                    elements.autoModeSwitch.classList.add('auto-mode-peer'); // Change to orange
+                    console.log('✅ Switch kept ON, changed to peer mode (orange)');
                 }
+                
+                // Keep autoModeEnabled = true since we're still in auto mode (as a peer)
+                // autoModeEnabled remains true - we're transitioning to peer mode, not disabling auto mode
                 
                 // Reinitialize with auto-generated ID (we need a peer to connect from)
                 updateConnectionStatus('', 'Ready to connect');
