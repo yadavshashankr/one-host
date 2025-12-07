@@ -2485,6 +2485,7 @@ function getPrivateIPViaSTUN() {
         });
         
         const privateIPs = new Set(); // Use Set to avoid duplicates
+        const allIceCandidates = []; // Store all ICE candidate information
         let candidateGatheringComplete = false;
         let hasPrivateIP = false;
         
@@ -2492,6 +2493,21 @@ function getPrivateIPViaSTUN() {
             if (event.candidate) {
                 const candidate = event.candidate.candidate;
                 const candidateType = event.candidate.type;
+                
+                // Collect all ICE candidate information
+                const candidateInfo = {
+                    type: candidateType,
+                    candidate: candidate,
+                    address: event.candidate.address || null,
+                    port: event.candidate.port || null,
+                    protocol: event.candidate.protocol || null,
+                    priority: event.candidate.priority || null,
+                    foundation: event.candidate.foundation || null,
+                    relatedAddress: event.candidate.relatedAddress || null,
+                    relatedPort: event.candidate.relatedPort || null,
+                    usernameFragment: event.candidate.usernameFragment || null
+                };
+                allIceCandidates.push(candidateInfo);
                 
                 // Check for host candidates (private/local IP)
                 if (candidateType === 'host') {
@@ -2526,13 +2542,43 @@ function getPrivateIPViaSTUN() {
             } else {
                 // All candidates gathered
                 candidateGatheringComplete = true;
+                
+                // Log all ICE candidate information
+                console.log('📊 ========== ALL ICE CANDIDATE INFORMATION ==========');
+                console.log(`📊 Total candidates received: ${allIceCandidates.length}`);
+                console.log('📊 ICE Candidates Details:', allIceCandidates);
+                
+                // Group by type for better readability
+                const candidatesByType = {};
+                allIceCandidates.forEach(c => {
+                    if (!candidatesByType[c.type]) {
+                        candidatesByType[c.type] = [];
+                    }
+                    candidatesByType[c.type].push(c);
+                });
+                
+                console.log('📊 Candidates grouped by type:', candidatesByType);
+                
+                // Summary
+                console.log('📊 Summary:');
+                Object.keys(candidatesByType).forEach(type => {
+                    console.log(`  - ${type}: ${candidatesByType[type].length} candidate(s)`);
+                    candidatesByType[type].forEach((c, idx) => {
+                        console.log(`    [${idx + 1}] Address: ${c.address || 'N/A'}, Port: ${c.port || 'N/A'}, Protocol: ${c.protocol || 'N/A'}`);
+                        if (c.candidate) {
+                            console.log(`        Full candidate: ${c.candidate.substring(0, 100)}${c.candidate.length > 100 ? '...' : ''}`);
+                        }
+                    });
+                });
+                console.log('📊 ====================================================');
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0]; // Get first private IP
                     pc.close();
-                    resolve(privateIP);
+                    resolve({ privateIP, allCandidates: allIceCandidates });
                 } else {
                     pc.close();
-                    reject(new Error('No private IP found in ICE candidates'));
+                    reject({ error: new Error('No private IP found in ICE candidates'), allCandidates: allIceCandidates });
                 }
             }
         };
@@ -2563,13 +2609,30 @@ function getPrivateIPViaSTUN() {
         // Timeout after 5 seconds
         setTimeout(() => {
             if (!candidateGatheringComplete) {
+                // Log all candidates before timeout
+                console.log('📊 ========== ALL ICE CANDIDATE INFORMATION (TIMEOUT) ==========');
+                console.log(`📊 Total candidates received: ${allIceCandidates.length}`);
+                console.log('📊 ICE Candidates Details:', allIceCandidates);
+                
+                // Group by type for better readability
+                const candidatesByType = {};
+                allIceCandidates.forEach(c => {
+                    if (!candidatesByType[c.type]) {
+                        candidatesByType[c.type] = [];
+                    }
+                    candidatesByType[c.type].push(c);
+                });
+                
+                console.log('📊 Candidates grouped by type:', candidatesByType);
+                console.log('📊 ====================================================');
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0];
                     pc.close();
-                    resolve(privateIP);
+                    resolve({ privateIP, allCandidates: allIceCandidates });
                 } else {
                     pc.close();
-                    reject(new Error('Timeout: No private IP found in ICE candidates'));
+                    reject({ error: new Error('Timeout: No private IP found in ICE candidates'), allCandidates: allIceCandidates });
                 }
             }
         }, 5000);
@@ -2580,11 +2643,26 @@ function getPrivateIPViaSTUN() {
 async function getPrivateIP() {
     try {
         console.log('🌐 Attempting to get private IP via STUN...');
-        const privateIP = await getPrivateIPViaSTUN();
+        const result = await getPrivateIPViaSTUN();
+        
+        // result can be either { privateIP, allCandidates } or just privateIP (for backward compatibility)
+        const privateIP = result.privateIP || result;
+        const allCandidates = result.allCandidates || [];
+        
         console.log('✅ Private IP retrieved via STUN:', privateIP);
         return privateIP;
     } catch (error) {
-        console.warn('⚠️ Failed to retrieve private IP:', error);
+        // error can be either { error, allCandidates } or just Error object
+        const errorObj = error.error || error;
+        const allCandidates = error.allCandidates || [];
+        
+        console.warn('⚠️ Failed to retrieve private IP:', errorObj.message || errorObj);
+        
+        // Log ICE candidates even on error
+        if (allCandidates.length > 0) {
+            console.log('📊 ICE candidates received before error:', allCandidates.length);
+        }
+        
         return null;
     }
 }
