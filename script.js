@@ -1338,7 +1338,7 @@ function formatFileSize(bytes) {
     return `<span translate="no">${size.toFixed(1)} ${units[unitIndex]}</span>`;
 }
 
-function showNotification(message, type = 'info') {
+function showNotification(message, type = 'info', duration = 5000) {
     const notification = document.createElement('div');
     notification.className = `notification ${type}`;
     notification.textContent = message.charAt(0).toUpperCase() + message.slice(1);  // Ensure sentence case
@@ -1347,7 +1347,7 @@ function showNotification(message, type = 'info') {
     
     setTimeout(() => {
         notification.remove();
-    }, 5000);
+    }, duration);
 }
 
 function resetConnection() {
@@ -2938,7 +2938,7 @@ async function switchToAutoMode() {
             elements.autoModeSwitch.checked = true;
         }
         
-        showNotification('Auto mode enabled', 'success');
+        showNotification('Auto mode enabled. Now enable Auto mode on other devices on the same Wi-Fi / Network to automatically connect to this device.', 'success', 8000);
         
         // Track auto mode enable
         Analytics.track('auto_mode_enabled', {
