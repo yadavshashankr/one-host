@@ -2938,7 +2938,7 @@ async function switchToAutoMode() {
             elements.autoModeSwitch.checked = true;
         }
         
-        showNotification('Auto mode enabled. Now enable Auto mode on other devices on the same Wi-Fi / Network to automatically connect to this device.', 'success', 8000);
+        showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.', 'success', 8000);
         
         // Track auto mode enable
         Analytics.track('auto_mode_enabled', {
