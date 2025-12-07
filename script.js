@@ -129,6 +129,7 @@ let isPageVisible = true;
 let autoModeEnabled = false; // Track auto mode state
 let autoModeConnectedAsPeer = false; // Track if connected to auto mode peer (not hosting)
 let autoModePeerId = null; // Store the auto mode peer ID we're connected to
+let autoModeNotification = null; // Store reference to auto mode notification for dismissal
 
 // Add file history tracking with Sets for uniqueness
 const fileHistory = {
@@ -539,6 +540,14 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         isConnectionReady = true;
         updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
         elements.fileTransferSection.classList.remove('hidden');
+        
+        // Dismiss auto mode notification when a peer connects while auto mode is enabled
+        // This indicates an auto mode connection was successful
+        if (autoModeEnabled && autoModeNotification) {
+            console.log('✅ Peer connected while auto mode is enabled, dismissing notification');
+            autoModeNotification.remove();
+            autoModeNotification = null;
+        }
         
         // Scroll to file transfer section on first connection
         if (connections.size === 1 && elements.fileTransferSection) {
@@ -1345,9 +1354,14 @@ function showNotification(message, type = 'info', duration = 5000) {
     
     elements.notifications.appendChild(notification);
     
-    setTimeout(() => {
-        notification.remove();
-    }, duration);
+    // Only auto-remove if duration is greater than 0
+    if (duration > 0) {
+        setTimeout(() => {
+            notification.remove();
+        }, duration);
+    }
+    
+    return notification; // Return notification element for manual dismissal
 }
 
 function resetConnection() {
@@ -2938,7 +2952,8 @@ async function switchToAutoMode() {
             elements.autoModeSwitch.checked = true;
         }
         
-        showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.', 'success', 8000);
+        // Store notification reference and show without auto-dismiss (duration = 0 means persistent)
+        autoModeNotification = showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.', 'success', 0);
         
         // Track auto mode enable
         Analytics.track('auto_mode_enabled', {
@@ -3081,6 +3096,13 @@ async function switchFromAutoMode() {
         // Update toggle visual state
         if (elements.autoModeSwitch) {
             elements.autoModeSwitch.checked = false;
+        }
+        
+        // Dismiss auto mode notification if it's still showing
+        if (autoModeNotification) {
+            console.log('✅ Auto mode disabled, dismissing notification');
+            autoModeNotification.remove();
+            autoModeNotification = null;
         }
         
         showNotification('Auto mode disabled', 'success');
