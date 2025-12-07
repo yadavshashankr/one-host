@@ -426,6 +426,11 @@ function setupPeerHandlers() {
         generateQRCode(id);
         initShareButton();
         updateEditButtonState();
+        
+        // Retrieve private IP and update auto mode button visibility after peer ID is generated
+        // This ensures DOM is ready and peer is initialized
+        console.log('🌐 Retrieving private IP to determine connection type...');
+        updateAutoModeButtonVisibility();
     });
 
     peer.on('connection', (conn) => {
@@ -1571,11 +1576,8 @@ function init() {
             // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
     initAutoModeToggle(); // Initialize auto mode toggle
-    
-    // Retrieve private IP on page load and update auto mode button visibility
-    // Button will only be shown after WiFi/Cellular decision is made
-    console.log('🌐 Retrieving private IP on page load to determine connection type...');
-    updateAutoModeButtonVisibility();
+    // Note: updateAutoModeButtonVisibility() will be called after peer ID is generated
+    // in the peer.on('open') handler to ensure DOM is ready
     
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
     
