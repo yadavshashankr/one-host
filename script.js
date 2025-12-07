@@ -539,6 +539,20 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         isConnectionReady = true;
         updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
         elements.fileTransferSection.classList.remove('hidden');
+        
+        // Scroll to file transfer section on first connection
+        if (connections.size === 1 && elements.fileTransferSection) {
+            // Use setTimeout to ensure DOM has updated and section is visible
+            setTimeout(() => {
+                elements.fileTransferSection.scrollIntoView({ 
+                    behavior: 'smooth', 
+                    block: 'start',
+                    inline: 'nearest'
+                });
+                console.log('✅ Scrolled to file transfer section');
+            }, 100);
+        }
+        
         addRecentPeer(conn.peer);
         
         // Track successful connection
