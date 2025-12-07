@@ -2572,13 +2572,19 @@ function getPrivateIPViaSTUN() {
                 });
                 console.log('📊 ====================================================');
                 
+                // Check if any candidate contains .local (mDNS)
+                const hasMDNS = allIceCandidates.some(c => 
+                    (c.address && c.address.includes('.local')) || 
+                    (c.candidate && c.candidate.includes('.local'))
+                );
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0]; // Get first private IP
                     pc.close();
-                    resolve({ privateIP, allCandidates: allIceCandidates });
+                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS });
                 } else {
                     pc.close();
-                    reject({ error: new Error('No private IP found in ICE candidates'), allCandidates: allIceCandidates });
+                    reject({ error: new Error('No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS });
                 }
             }
         };
@@ -2626,68 +2632,73 @@ function getPrivateIPViaSTUN() {
                 console.log('📊 Candidates grouped by type:', candidatesByType);
                 console.log('📊 ====================================================');
                 
+                // Check if any candidate contains .local (mDNS)
+                const hasMDNS = allIceCandidates.some(c => 
+                    (c.address && c.address.includes('.local')) || 
+                    (c.candidate && c.candidate.includes('.local'))
+                );
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0];
                     pc.close();
-                    resolve({ privateIP, allCandidates: allIceCandidates });
+                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS });
                 } else {
                     pc.close();
-                    reject({ error: new Error('Timeout: No private IP found in ICE candidates'), allCandidates: allIceCandidates });
+                    reject({ error: new Error('Timeout: No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS });
                 }
             }
         }, 5000);
     });
 }
 
-// Get private IP address
+// Get private IP address and check for mDNS
 async function getPrivateIP() {
     try {
         console.log('🌐 Attempting to get private IP via STUN...');
         const result = await getPrivateIPViaSTUN();
         
-        // result can be either { privateIP, allCandidates } or just privateIP (for backward compatibility)
+        // result can be either { privateIP, allCandidates, hasMDNS } or just privateIP (for backward compatibility)
         const privateIP = result.privateIP || result;
         const allCandidates = result.allCandidates || [];
+        const hasMDNS = result.hasMDNS || false;
         
         console.log('✅ Private IP retrieved via STUN:', privateIP);
-        return privateIP;
+        console.log('📡 mDNS (.local) detected:', hasMDNS);
+        return { privateIP, hasMDNS, allCandidates };
     } catch (error) {
-        // error can be either { error, allCandidates } or just Error object
+        // error can be either { error, allCandidates, hasMDNS } or just Error object
         const errorObj = error.error || error;
         const allCandidates = error.allCandidates || [];
+        const hasMDNS = error.hasMDNS || false;
         
         console.warn('⚠️ Failed to retrieve private IP:', errorObj.message || errorObj);
+        console.log('📡 mDNS (.local) detected:', hasMDNS);
         
         // Log ICE candidates even on error
         if (allCandidates.length > 0) {
             console.log('📊 ICE candidates received before error:', allCandidates.length);
         }
         
-        return null;
+        return { privateIP: null, hasMDNS, allCandidates };
     }
 }
 
-// Check if device is connected via WiFi (private IP starts with 192)
-async function isOnWiFi() {
+// Check if mDNS (.local) is present in ICE candidates
+async function hasMDNSInICE() {
     try {
-        const privateIP = await getPrivateIP();
-        if (!privateIP) {
-            console.warn('⚠️ Could not determine private IP, defaulting to hide auto mode');
-            return false;
-        }
+        const result = await getPrivateIP();
+        const hasMDNS = result.hasMDNS || false;
         
-        // Check if private IP starts with "192" (as per user requirement)
-        const isWiFi = privateIP.startsWith('192');
-        console.log(`📶 Connection type detected: ${isWiFi ? 'WiFi' : 'Cellular'} (Private IP: ${privateIP})`);
-        return isWiFi;
+        console.log(`📡 mDNS (.local) check result: ${hasMDNS ? 'Found' : 'Not found'}`);
+        return hasMDNS;
     } catch (error) {
-        console.error('❌ Error checking WiFi connection:', error);
+        console.error('❌ Error checking for mDNS:', error);
         return false; // Default to hide auto mode on error
     }
 }
 
-// Update auto mode button visibility based on WiFi connection
-// Only shows button after WiFi/Cellular decision is made
+// Update auto mode button visibility based on mDNS (.local) detection in ICE candidates
+// Shows button if .local is found, hides if not found
 async function updateAutoModeButtonVisibility() {
     // Use the existing auto mode switch element to find its container
     if (!elements.autoModeSwitch) {
@@ -2705,21 +2716,21 @@ async function updateAutoModeButtonVisibility() {
     autoModeContainer.style.display = 'none';
     
     try {
-        // Check WiFi connection using private IP
-        const isWiFiConnected = await isOnWiFi();
+        // Check if mDNS (.local) is present in ICE candidates
+        const hasMDNS = await hasMDNSInICE();
         
-        if (isWiFiConnected) {
-            // Show auto mode button only after WiFi is confirmed
+        if (hasMDNS) {
+            // Show auto mode button if .local is found in ICE candidates
             autoModeContainer.style.display = '';
-            console.log('✅ Auto mode button shown (WiFi connected)');
+            console.log('✅ Auto mode button shown (mDNS .local detected in ICE candidates)');
         } else {
-            // Hide auto mode button (cellular or other connection)
+            // Hide auto mode button if .local is not found
             autoModeContainer.style.display = 'none';
-            console.log('❌ Auto mode button hidden (not on WiFi - Cellular/Other)');
+            console.log('❌ Auto mode button hidden (no .local found in ICE candidates)');
             
             // Also disable auto mode if it was enabled
             if (autoModeEnabled) {
-                console.log('🔄 Auto mode was enabled, disabling due to non-WiFi connection');
+                console.log('🔄 Auto mode was enabled, disabling due to no .local in ICE candidates');
                 if (elements.autoModeSwitch) {
                     elements.autoModeSwitch.checked = false;
                 }
