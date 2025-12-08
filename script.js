@@ -2601,11 +2601,26 @@ function getPrivateIPViaSTUN() {
                 });
                 console.log('📊 ====================================================');
                 
-                // Check if any candidate contains .local (mDNS)
-                const hasMDNS = allIceCandidates.some(c => 
-                    (c.address && c.address.includes('.local')) || 
-                    (c.candidate && c.candidate.includes('.local'))
-                );
+                // Check if any HOST candidate contains .local (mDNS)
+                // mDNS only appears in host candidates, not in srflx or relay candidates
+                const hasMDNS = allIceCandidates.some(c => {
+                    // Only check host type candidates for .local
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field contains .local (most reliable)
+                    if (c.address && c.address.endsWith('.local')) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for .local in host candidates
+                    if (c.candidate && c.candidate.includes('.local')) {
+                        // Verify it's in a hostname pattern, not just anywhere
+                        const localMatch = c.candidate.match(/[\w-]+\.local/);
+                        return localMatch !== null;
+                    }
+                    
+                    return false;
+                });
                 
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0]; // Get first private IP
@@ -2661,11 +2676,26 @@ function getPrivateIPViaSTUN() {
                 console.log('📊 Candidates grouped by type:', candidatesByType);
                 console.log('📊 ====================================================');
                 
-                // Check if any candidate contains .local (mDNS)
-                const hasMDNS = allIceCandidates.some(c => 
-                    (c.address && c.address.includes('.local')) || 
-                    (c.candidate && c.candidate.includes('.local'))
-                );
+                // Check if any HOST candidate contains .local (mDNS)
+                // mDNS only appears in host candidates, not in srflx or relay candidates
+                const hasMDNS = allIceCandidates.some(c => {
+                    // Only check host type candidates for .local
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field contains .local (most reliable)
+                    if (c.address && c.address.endsWith('.local')) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for .local in host candidates
+                    if (c.candidate && c.candidate.includes('.local')) {
+                        // Verify it's in a hostname pattern, not just anywhere
+                        const localMatch = c.candidate.match(/[\w-]+\.local/);
+                        return localMatch !== null;
+                    }
+                    
+                    return false;
+                });
                 
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0];
