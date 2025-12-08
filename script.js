@@ -1761,6 +1761,12 @@ function updateConnectionStatus(status, message) {
             elements.fileTransferSection.classList.add('hidden');
             console.log('📁 File transfer section hidden (status: Ready to connect)');
         }
+        
+        // If auto mode is enabled, check WiFi and disable/hide if not detected
+        if (autoModeEnabled) {
+            console.log('🔍 Auto mode is enabled, checking WiFi status...');
+            checkAndDisableAutoModeIfNoWiFi();
+        }
     }
     
     // Update title to show number of connections
@@ -2877,6 +2883,53 @@ async function hasMDNSInICE() {
     } catch (error) {
         console.error('❌ Error checking for WiFi:', error);
         return false; // Default to hide auto mode on error
+    }
+}
+
+// Check WiFi and disable/hide auto mode if not detected
+async function checkAndDisableAutoModeIfNoWiFi() {
+    try {
+        const isOnWiFi = await hasMDNSInICE();
+        
+        if (!isOnWiFi) {
+            // WiFi not detected - disable and hide auto mode
+            console.log('❌ WiFi not detected, disabling and hiding auto mode');
+            
+            // Disable auto mode
+            autoModeEnabled = false;
+            
+            // Hide and disable the switch
+            const autoModeContainer = elements.autoModeSwitch?.closest('.auto-mode-toggle-container');
+            if (autoModeContainer) {
+                autoModeContainer.style.display = 'none';
+            }
+            
+            if (elements.autoModeSwitch) {
+                elements.autoModeSwitch.checked = false;
+                elements.autoModeSwitch.disabled = true;
+                elements.autoModeSwitch.classList.remove('auto-mode-peer');
+            }
+            
+            // Dismiss any auto mode notification
+            if (autoModeNotification) {
+                autoModeNotification.remove();
+                autoModeNotification = null;
+            }
+        } else {
+            console.log('✅ WiFi still detected, keeping auto mode enabled');
+        }
+    } catch (error) {
+        console.error('❌ Error checking WiFi for auto mode:', error);
+        // On error, assume no WiFi and disable auto mode
+        autoModeEnabled = false;
+        const autoModeContainer = elements.autoModeSwitch?.closest('.auto-mode-toggle-container');
+        if (autoModeContainer) {
+            autoModeContainer.style.display = 'none';
+        }
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+            elements.autoModeSwitch.disabled = true;
+        }
     }
 }
 
