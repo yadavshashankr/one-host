@@ -2601,10 +2601,13 @@ function getPrivateIPViaSTUN() {
                 });
                 console.log('📊 ====================================================');
                 
-                // Check if any HOST candidate contains .local (mDNS)
-                // mDNS only appears in host candidates, not in srflx or relay candidates
+                // Check if any HOST candidate indicates WiFi connection
+                // WiFi can be detected via:
+                // 1. .local (mDNS) - used by some browsers/devices
+                // 2. Private IP starting with 192.168.x.x - used by Android and others
+                // Both checks happen in parallel on host candidates only
                 const hasMDNS = allIceCandidates.some(c => {
-                    // Only check host type candidates for .local
+                    // Only check host type candidates
                     if (c.type !== 'host') return false;
                     
                     // Check if address field contains .local (most reliable)
@@ -2616,19 +2619,45 @@ function getPrivateIPViaSTUN() {
                     if (c.candidate && c.candidate.includes('.local')) {
                         // Verify it's in a hostname pattern, not just anywhere
                         const localMatch = c.candidate.match(/[\w-]+\.local/);
-                        return localMatch !== null;
+                        if (localMatch !== null) {
+                            return true;
+                        }
                     }
                     
                     return false;
                 });
                 
+                // Check for private IP starting with 192.168.x.x (Android WiFi detection)
+                const has192IP = allIceCandidates.some(c => {
+                    // Only check host type candidates
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field starts with 192.168.
+                    if (c.address && c.address.startsWith('192.168.')) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for 192.168.x.x pattern
+                    if (c.candidate) {
+                        const ip192Match = c.candidate.match(/\b192\.168\.\d{1,3}\.\d{1,3}\b/);
+                        if (ip192Match) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                });
+                
+                // WiFi is detected if either .local OR 192.168.x.x is found
+                const isOnWiFi = hasMDNS || has192IP;
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0]; // Get first private IP
                     pc.close();
-                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS });
+                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
                 } else {
                     pc.close();
-                    reject({ error: new Error('No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS });
+                    reject({ error: new Error('No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
                 }
             }
         };
@@ -2676,10 +2705,13 @@ function getPrivateIPViaSTUN() {
                 console.log('📊 Candidates grouped by type:', candidatesByType);
                 console.log('📊 ====================================================');
                 
-                // Check if any HOST candidate contains .local (mDNS)
-                // mDNS only appears in host candidates, not in srflx or relay candidates
+                // Check if any HOST candidate indicates WiFi connection
+                // WiFi can be detected via:
+                // 1. .local (mDNS) - used by some browsers/devices
+                // 2. Private IP starting with 192.168.x.x - used by Android and others
+                // Both checks happen in parallel on host candidates only
                 const hasMDNS = allIceCandidates.some(c => {
-                    // Only check host type candidates for .local
+                    // Only check host type candidates
                     if (c.type !== 'host') return false;
                     
                     // Check if address field contains .local (most reliable)
@@ -2691,19 +2723,45 @@ function getPrivateIPViaSTUN() {
                     if (c.candidate && c.candidate.includes('.local')) {
                         // Verify it's in a hostname pattern, not just anywhere
                         const localMatch = c.candidate.match(/[\w-]+\.local/);
-                        return localMatch !== null;
+                        if (localMatch !== null) {
+                            return true;
+                        }
                     }
                     
                     return false;
                 });
                 
+                // Check for private IP starting with 192.168.x.x (Android WiFi detection)
+                const has192IP = allIceCandidates.some(c => {
+                    // Only check host type candidates
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field starts with 192.168.
+                    if (c.address && c.address.startsWith('192.168.')) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for 192.168.x.x pattern
+                    if (c.candidate) {
+                        const ip192Match = c.candidate.match(/\b192\.168\.\d{1,3}\.\d{1,3}\b/);
+                        if (ip192Match) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                });
+                
+                // WiFi is detected if either .local OR 192.168.x.x is found
+                const isOnWiFi = hasMDNS || has192IP;
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0];
                     pc.close();
-                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS });
+                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
                 } else {
                     pc.close();
-                    reject({ error: new Error('Timeout: No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS });
+                    reject({ error: new Error('Timeout: No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
                 }
             }
         }, 5000);
@@ -2716,48 +2774,56 @@ async function getPrivateIP() {
         console.log('🌐 Attempting to get private IP via STUN...');
         const result = await getPrivateIPViaSTUN();
         
-        // result can be either { privateIP, allCandidates, hasMDNS } or just privateIP (for backward compatibility)
+        // result can be either { privateIP, allCandidates, hasMDNS, has192IP, isOnWiFi } or just privateIP (for backward compatibility)
         const privateIP = result.privateIP || result;
         const allCandidates = result.allCandidates || [];
         const hasMDNS = result.hasMDNS || false;
+        const has192IP = result.has192IP || false;
+        const isOnWiFi = result.isOnWiFi || false;
         
         console.log('✅ Private IP retrieved via STUN:', privateIP);
-        console.log('📡 mDNS (.local) detected:', hasMDNS);
-        return { privateIP, hasMDNS, allCandidates };
+        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? '192.168.x.x IP' : 'none');
+        console.log('📡 WiFi detected:', isOnWiFi, wifiMethod !== 'none' ? `(via ${wifiMethod})` : '');
+        return { privateIP, hasMDNS, has192IP, isOnWiFi, allCandidates };
     } catch (error) {
-        // error can be either { error, allCandidates, hasMDNS } or just Error object
+        // error can be either { error, allCandidates, hasMDNS, has192IP, isOnWiFi } or just Error object
         const errorObj = error.error || error;
         const allCandidates = error.allCandidates || [];
         const hasMDNS = error.hasMDNS || false;
+        const has192IP = error.has192IP || false;
+        const isOnWiFi = error.isOnWiFi || false;
         
         console.warn('⚠️ Failed to retrieve private IP:', errorObj.message || errorObj);
-        console.log('📡 mDNS (.local) detected:', hasMDNS);
+        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? '192.168.x.x IP' : 'none');
+        console.log('📡 WiFi detected:', isOnWiFi, wifiMethod !== 'none' ? `(via ${wifiMethod})` : '');
         
         // Log ICE candidates even on error
         if (allCandidates.length > 0) {
             console.log('📊 ICE candidates received before error:', allCandidates.length);
         }
         
-        return { privateIP: null, hasMDNS, allCandidates };
+        return { privateIP: null, hasMDNS, has192IP, isOnWiFi, allCandidates };
     }
 }
 
-// Check if mDNS (.local) is present in ICE candidates
+// Check if WiFi is detected in ICE candidates (via .local mDNS or 192.168.x.x IP)
 async function hasMDNSInICE() {
     try {
         const result = await getPrivateIP();
-        const hasMDNS = result.hasMDNS || false;
+        // Check for WiFi via either .local (mDNS) OR 192.168.x.x IP (Android)
+        const isOnWiFi = result.isOnWiFi || result.hasMDNS || result.has192IP || false;
         
-        console.log(`📡 mDNS (.local) check result: ${hasMDNS ? 'Found' : 'Not found'}`);
-        return hasMDNS;
+        const detectionMethod = result.hasMDNS ? 'mDNS (.local)' : (result.has192IP ? '192.168.x.x IP' : 'none');
+        console.log(`📡 WiFi check result: ${isOnWiFi ? 'Detected' : 'Not detected'}${detectionMethod !== 'none' ? ` (via ${detectionMethod})` : ''}`);
+        return isOnWiFi;
     } catch (error) {
-        console.error('❌ Error checking for mDNS:', error);
+        console.error('❌ Error checking for WiFi:', error);
         return false; // Default to hide auto mode on error
     }
 }
 
-// Update auto mode button visibility based on mDNS (.local) detection in ICE candidates
-// Shows button if .local is found, hides if not found
+// Update auto mode button visibility based on WiFi detection in ICE candidates
+// Shows button if WiFi is detected (via .local mDNS or 192.168.x.x IP), hides if not found
 async function updateAutoModeButtonVisibility() {
     // Use the existing auto mode switch element to find its container
     if (!elements.autoModeSwitch) {
@@ -2778,12 +2844,12 @@ async function updateAutoModeButtonVisibility() {
         // Create a 2-second timeout promise
         const timeoutPromise = new Promise((resolve) => {
             setTimeout(() => {
-                resolve({ timeout: true, hasMDNS: false });
+                resolve({ timeout: true, isOnWiFi: false });
             }, 2000);
         });
         
-        // Race the mDNS check against 2-second timeout
-        const checkPromise = hasMDNSInICE().then(hasMDNS => ({ timeout: false, hasMDNS }));
+        // Race the WiFi check against 2-second timeout
+        const checkPromise = hasMDNSInICE().then(isOnWiFi => ({ timeout: false, isOnWiFi }));
         
         const result = await Promise.race([checkPromise, timeoutPromise]);
         
@@ -2804,20 +2870,20 @@ async function updateAutoModeButtonVisibility() {
         }
         
         // Check completed within 2 seconds
-        const hasMDNS = result.hasMDNS;
+        const isOnWiFi = result.isOnWiFi;
         
-        if (hasMDNS) {
-            // Show auto mode button if .local is found in ICE candidates
+        if (isOnWiFi) {
+            // Show auto mode button if WiFi is detected (via .local or 192.168.x.x)
             autoModeContainer.style.display = '';
-            console.log('✅ Auto mode button shown (mDNS .local detected in ICE candidates)');
+            console.log('✅ Auto mode button shown (WiFi detected in ICE candidates)');
         } else {
-            // Hide auto mode button if .local is not found
+            // Hide auto mode button if WiFi is not detected
             autoModeContainer.style.display = 'none';
-            console.log('❌ Auto mode button hidden (no .local found in ICE candidates)');
+            console.log('❌ Auto mode button hidden (no WiFi detected in ICE candidates)');
             
             // Also disable auto mode if it was enabled
             if (autoModeEnabled) {
-                console.log('🔄 Auto mode was enabled, disabling due to no .local in ICE candidates');
+                console.log('🔄 Auto mode was enabled, disabling due to no WiFi detected');
                 if (elements.autoModeSwitch) {
                     elements.autoModeSwitch.checked = false;
                 }
