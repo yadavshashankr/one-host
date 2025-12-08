@@ -2915,6 +2915,10 @@ async function checkAndDisableAutoModeIfNoWiFi() {
                 autoModeNotification.remove();
                 autoModeNotification = null;
             }
+            
+            // Reinitialize peer with normal auto-generated ID
+            console.log('🔄 Reinitializing peer with normal auto-generated ID...');
+            initPeerJS();
         } else {
             console.log('✅ WiFi still detected, keeping auto mode enabled');
         }
@@ -2930,6 +2934,10 @@ async function checkAndDisableAutoModeIfNoWiFi() {
             elements.autoModeSwitch.checked = false;
             elements.autoModeSwitch.disabled = true;
         }
+        
+        // Reinitialize peer with normal auto-generated ID
+        console.log('🔄 Reinitializing peer with normal auto-generated ID (error case)...');
+        initPeerJS();
     }
 }
 
