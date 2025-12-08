@@ -2517,6 +2517,7 @@ function getPrivateIPViaSTUN() {
         const allIceCandidates = []; // Store all ICE candidate information
         let candidateGatheringComplete = false;
         let hasPrivateIP = false;
+        let earlyResolved = false; // Flag to prevent multiple early resolves
         
         pc.onicecandidate = (event) => {
             if (event.candidate) {
@@ -2554,6 +2555,23 @@ function getPrivateIPViaSTUN() {
                             privateIPs.add(ip);
                             hasPrivateIP = true;
                             console.log('✅ Private IP found via STUN:', ip);
+                            
+                            // Early WiFi detection: if we find 192.168.x.x, we can resolve immediately
+                            // This helps Android devices where candidate gathering takes longer
+                            if (ip.startsWith('192.168.') && !earlyResolved) {
+                                earlyResolved = true;
+                                console.log('🚀 Early WiFi detection: 192.168.x.x found, resolving early for faster response');
+                                const earlyResult = {
+                                    privateIP: ip,
+                                    allCandidates: allIceCandidates,
+                                    hasMDNS: false, // Will be checked later if needed
+                                    has192IP: true,
+                                    isOnWiFi: true
+                                };
+                                pc.close();
+                                resolve(earlyResult);
+                                return;
+                            }
                         }
                     }
                     
@@ -2565,7 +2583,39 @@ function getPrivateIPViaSTUN() {
                             (ip.startsWith('172.') && parseInt(ip.split('.')[1]) >= 16 && parseInt(ip.split('.')[1]) <= 31))) {
                             privateIPs.add(ip);
                             hasPrivateIP = true;
+                            
+                            // Early WiFi detection: if we find 192.168.x.x, we can resolve immediately
+                            if (ip.startsWith('192.168.') && !earlyResolved) {
+                                earlyResolved = true;
+                                console.log('🚀 Early WiFi detection: 192.168.x.x found (regex), resolving early for faster response');
+                                const earlyResult = {
+                                    privateIP: ip,
+                                    allCandidates: allIceCandidates,
+                                    hasMDNS: false, // Will be checked later if needed
+                                    has192IP: true,
+                                    isOnWiFi: true
+                                };
+                                pc.close();
+                                resolve(earlyResult);
+                                return;
+                            }
                         }
+                    }
+                    
+                    // Also check for .local in address field for early detection
+                    if (event.candidate.address && event.candidate.address.endsWith('.local') && !earlyResolved) {
+                        earlyResolved = true;
+                        console.log('🚀 Early WiFi detection: .local found, resolving early for faster response');
+                        const earlyResult = {
+                            privateIP: event.candidate.address,
+                            allCandidates: allIceCandidates,
+                            hasMDNS: true,
+                            has192IP: false,
+                            isOnWiFi: true
+                        };
+                        pc.close();
+                        resolve(earlyResult);
+                        return;
                     }
                 }
             } else {
