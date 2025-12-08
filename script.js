@@ -1755,6 +1755,14 @@ function updateConnectionStatus(status, message) {
     elements.statusDot.className = 'status-dot ' + (status || '');
     elements.statusText.textContent = message.charAt(0).toUpperCase() + message.slice(1);  // Ensure sentence case
     
+    // Hide file transfer section when status is "Ready to connect"
+    if (message && message.toLowerCase() === 'ready to connect') {
+        if (elements.fileTransferSection) {
+            elements.fileTransferSection.classList.add('hidden');
+            console.log('📁 File transfer section hidden (status: Ready to connect)');
+        }
+    }
+    
     // Update title to show number of connections
     if (connections && connections.size > 0) {
         document.title = `(${connections.size}) One-Host`;
