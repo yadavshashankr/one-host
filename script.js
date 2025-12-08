@@ -2903,13 +2903,22 @@ async function updateAutoModeButtonVisibility() {
         
         const result = await Promise.race([checkPromise, timeoutPromise]);
         
+        // Check if device is Android or iOS
+        const userAgent = navigator.userAgent.toLowerCase();
+        const isAndroid = /android/.test(userAgent);
+        const isIOS = /iphone|ipad|ipod/.test(userAgent);
+        const isMobileDevice = isAndroid || isIOS;
+        
         if (result.timeout) {
             // Took more than 2 seconds - assume cellular, keep switch hidden
             console.log('⏱️ Auto mode check timed out (>2s) - assuming cellular, keeping switch hidden');
             autoModeContainer.style.display = 'none';
             
-            // Show notification that auto mode only works on WiFi
-            showNotification('Auto mode only works on WiFi', 'info', 5000);
+            // On Android/iOS, also disable the switch when WiFi is not detected
+            if (isMobileDevice && elements.autoModeSwitch) {
+                elements.autoModeSwitch.disabled = true;
+                console.log('🔒 Auto mode switch disabled (mobile device, WiFi not detected)');
+            }
             
             // Also disable auto mode if it was enabled
             if (autoModeEnabled) {
@@ -2928,14 +2937,24 @@ async function updateAutoModeButtonVisibility() {
         if (isOnWiFi) {
             // Show auto mode button if WiFi is detected (via .local or 192.168.x.x)
             autoModeContainer.style.display = '';
+            
+            // Enable the switch on mobile devices when WiFi is detected
+            if (isMobileDevice && elements.autoModeSwitch) {
+                elements.autoModeSwitch.disabled = false;
+                console.log('✅ Auto mode switch enabled (mobile device, WiFi detected)');
+            }
+            
             console.log('✅ Auto mode button shown (WiFi detected in ICE candidates)');
         } else {
             // Hide auto mode button if WiFi is not detected
             autoModeContainer.style.display = 'none';
             console.log('❌ Auto mode button hidden (no WiFi detected in ICE candidates)');
             
-            // Show notification that auto mode only works on WiFi
-            showNotification('Auto mode only works on WiFi', 'info', 5000);
+            // On Android/iOS, also disable the switch when WiFi is not detected
+            if (isMobileDevice && elements.autoModeSwitch) {
+                elements.autoModeSwitch.disabled = true;
+                console.log('🔒 Auto mode switch disabled (mobile device, WiFi not detected)');
+            }
             
             // Also disable auto mode if it was enabled
             if (autoModeEnabled) {
@@ -2950,6 +2969,17 @@ async function updateAutoModeButtonVisibility() {
         console.error('❌ Error updating auto mode button visibility:', error);
         // Keep button hidden on error
         autoModeContainer.style.display = 'none';
+        
+        // On Android/iOS, also disable the switch on error
+        const userAgent = navigator.userAgent.toLowerCase();
+        const isAndroid = /android/.test(userAgent);
+        const isIOS = /iphone|ipad|ipod/.test(userAgent);
+        const isMobileDevice = isAndroid || isIOS;
+        
+        if (isMobileDevice && elements.autoModeSwitch) {
+            elements.autoModeSwitch.disabled = true;
+            console.log('🔒 Auto mode switch disabled (mobile device, error during WiFi check)');
+        }
     }
 }
 
@@ -3398,6 +3428,24 @@ async function handleAutoModeToggle() {
         // Check if connections exist
         if (connections.size > 0) {
             showNotification('Cannot enable auto mode while connected to peers', 'warning');
+            switchElement.checked = false;
+            return;
+        }
+        
+        // Check if WiFi is detected before enabling auto mode
+        try {
+            const isOnWiFi = await hasMDNSInICE();
+            if (!isOnWiFi) {
+                // WiFi not detected - show notification and revert switch
+                showNotification('Auto mode only works on WiFi', 'info', 5000);
+                switchElement.checked = false;
+                console.log('❌ Auto mode cannot be enabled: WiFi not detected');
+                return;
+            }
+        } catch (error) {
+            // If WiFi check fails, assume no WiFi and revert switch
+            console.error('❌ Error checking WiFi status:', error);
+            showNotification('Auto mode only works on WiFi', 'info', 5000);
             switchElement.checked = false;
             return;
         }
