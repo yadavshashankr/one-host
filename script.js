@@ -2775,8 +2775,36 @@ async function updateAutoModeButtonVisibility() {
     autoModeContainer.style.display = 'none';
     
     try {
-        // Check if mDNS (.local) is present in ICE candidates
-        const hasMDNS = await hasMDNSInICE();
+        // Create a 2-second timeout promise
+        const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+                resolve({ timeout: true, hasMDNS: false });
+            }, 2000);
+        });
+        
+        // Race the mDNS check against 2-second timeout
+        const checkPromise = hasMDNSInICE().then(hasMDNS => ({ timeout: false, hasMDNS }));
+        
+        const result = await Promise.race([checkPromise, timeoutPromise]);
+        
+        if (result.timeout) {
+            // Took more than 2 seconds - assume cellular, keep switch hidden
+            console.log('⏱️ Auto mode check timed out (>2s) - assuming cellular, keeping switch hidden');
+            autoModeContainer.style.display = 'none';
+            
+            // Also disable auto mode if it was enabled
+            if (autoModeEnabled) {
+                console.log('🔄 Auto mode was enabled, disabling due to timeout (likely cellular)');
+                if (elements.autoModeSwitch) {
+                    elements.autoModeSwitch.checked = false;
+                }
+                autoModeEnabled = false;
+            }
+            return;
+        }
+        
+        // Check completed within 2 seconds
+        const hasMDNS = result.hasMDNS;
         
         if (hasMDNS) {
             // Show auto mode button if .local is found in ICE candidates
