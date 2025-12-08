@@ -2908,6 +2908,9 @@ async function updateAutoModeButtonVisibility() {
             console.log('⏱️ Auto mode check timed out (>2s) - assuming cellular, keeping switch hidden');
             autoModeContainer.style.display = 'none';
             
+            // Show notification that auto mode only works on WiFi
+            showNotification('Auto mode only works on WiFi', 'info', 5000);
+            
             // Also disable auto mode if it was enabled
             if (autoModeEnabled) {
                 console.log('🔄 Auto mode was enabled, disabling due to timeout (likely cellular)');
@@ -2930,6 +2933,9 @@ async function updateAutoModeButtonVisibility() {
             // Hide auto mode button if WiFi is not detected
             autoModeContainer.style.display = 'none';
             console.log('❌ Auto mode button hidden (no WiFi detected in ICE candidates)');
+            
+            // Show notification that auto mode only works on WiFi
+            showNotification('Auto mode only works on WiFi', 'info', 5000);
             
             // Also disable auto mode if it was enabled
             if (autoModeEnabled) {
