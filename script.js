@@ -2574,7 +2574,7 @@ function getPrivateIPViaSTUN() {
                             // This helps Android devices where candidate gathering takes longer
                             if (ip.startsWith('192.168.') && !earlyResolved) {
                                 earlyResolved = true;
-                                console.log('🚀 Early WiFi detection: 192.168.x.x found, resolving early for faster response');
+                                console.log('🚀 Early WiFi detection: 192.168.x.x found (Android), resolving early for faster response');
                                 const earlyResult = {
                                     privateIP: ip,
                                     allCandidates: allIceCandidates,
@@ -2601,7 +2601,7 @@ function getPrivateIPViaSTUN() {
                             // Early WiFi detection: if we find 192.168.x.x, we can resolve immediately
                             if (ip.startsWith('192.168.') && !earlyResolved) {
                                 earlyResolved = true;
-                                console.log('🚀 Early WiFi detection: 192.168.x.x found (regex), resolving early for faster response');
+                                console.log('🚀 Early WiFi detection: 192.168.x.x found (regex, Android), resolving early for faster response');
                                 const earlyResult = {
                                     privateIP: ip,
                                     allCandidates: allIceCandidates,
@@ -2614,22 +2614,6 @@ function getPrivateIPViaSTUN() {
                                 return;
                             }
                         }
-                    }
-                    
-                    // Also check for .local in address field for early detection
-                    if (event.candidate.address && event.candidate.address.endsWith('.local') && !earlyResolved) {
-                        earlyResolved = true;
-                        console.log('🚀 Early WiFi detection: .local found, resolving early for faster response');
-                        const earlyResult = {
-                            privateIP: event.candidate.address,
-                            allCandidates: allIceCandidates,
-                            hasMDNS: true,
-                            has192IP: false,
-                            isOnWiFi: true
-                        };
-                        pc.close();
-                        resolve(earlyResult);
-                        return;
                     }
                 }
             } else {
