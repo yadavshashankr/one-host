@@ -421,7 +421,7 @@ h3 {
     }
 
     .peer-id-title {
-        font-size: 1.2rem; /* Slightly smaller on mobile */
+        font-size: 1.5rem; /* Match h2 font size on mobile (same as "Connect to Peer") */
         flex-shrink: 1; /* Allow text to shrink if needed */
         min-width: 0; /* Allow text truncation if necessary */
     }
@@ -871,6 +871,10 @@ input[type="file"] {
 
     .peer-actions {
         justify-content: center;
+    }
+
+    .peer-id-title {
+        font-size: 1.5rem; /* Match h2 font size on mobile (same as "Connect to Peer") */
     }
 
     #qrcode {

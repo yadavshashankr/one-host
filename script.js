@@ -2517,6 +2517,26 @@ function getPublicIPViaSTUN() {
     });
 }
 
+// Helper function to check if an IP address is in private range (RFC 1918)
+// Checks for: 192.168.x.x, 10.x.x.x, and 172.16-31.x.x
+function isPrivateIP(ip) {
+    if (!ip) return false;
+    
+    // 192.168.0.0/16 (192.168.0.0 to 192.168.255.255)
+    if (ip.startsWith('192.168.')) return true;
+    
+    // 10.0.0.0/8 (10.0.0.0 to 10.255.255.255)
+    if (ip.startsWith('10.')) return true;
+    
+    // 172.16.0.0/12 (172.16.0.0 to 172.31.255.255)
+    if (ip.startsWith('172.')) {
+        const secondOctet = parseInt(ip.split('.')[1]);
+        if (secondOctet >= 16 && secondOctet <= 31) return true;
+    }
+    
+    return false;
+}
+
 // Get private IP address using WebRTC ICE candidates
 function getPrivateIPViaSTUN() {
     return new Promise((resolve, reject) => {
@@ -2564,22 +2584,21 @@ function getPrivateIPViaSTUN() {
                         const ip = parts[4]; // 5th element (0-indexed: 4)
                         
                         // Validate it's a private IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-                        if (ip && (ip.startsWith('192.168.') || ip.startsWith('10.') || 
-                            (ip.startsWith('172.') && parseInt(ip.split('.')[1]) >= 16 && parseInt(ip.split('.')[1]) <= 31))) {
+                        if (ip && isPrivateIP(ip)) {
                             privateIPs.add(ip);
                             hasPrivateIP = true;
                             console.log('✅ Private IP found via STUN:', ip);
                             
-                            // Early WiFi detection: if we find 192.168.x.x, we can resolve immediately
+                            // Early WiFi detection: if we find any private IP, we can resolve immediately
                             // This helps Android devices where candidate gathering takes longer
-                            if (ip.startsWith('192.168.') && !earlyResolved) {
+                            if (!earlyResolved) {
                                 earlyResolved = true;
-                                console.log('🚀 Early WiFi detection: 192.168.x.x found (Android), resolving early for faster response');
+                                console.log(`🚀 Early WiFi detection: ${ip} found (private IP range), resolving early for faster response`);
                                 const earlyResult = {
                                     privateIP: ip,
                                     allCandidates: allIceCandidates,
                                     hasMDNS: false, // Will be checked later if needed
-                                    has192IP: true,
+                                    has192IP: true, // Keep name for backward compatibility, but now checks all private IPs
                                     isOnWiFi: true
                                 };
                                 pc.close();
@@ -2593,20 +2612,19 @@ function getPrivateIPViaSTUN() {
                     const ipMatch = candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
                     if (ipMatch) {
                         const ip = ipMatch[1];
-                        if (ip && (ip.startsWith('192.168.') || ip.startsWith('10.') || 
-                            (ip.startsWith('172.') && parseInt(ip.split('.')[1]) >= 16 && parseInt(ip.split('.')[1]) <= 31))) {
+                        if (ip && isPrivateIP(ip)) {
                             privateIPs.add(ip);
                             hasPrivateIP = true;
                             
-                            // Early WiFi detection: if we find 192.168.x.x, we can resolve immediately
-                            if (ip.startsWith('192.168.') && !earlyResolved) {
+                            // Early WiFi detection: if we find any private IP, we can resolve immediately
+                            if (!earlyResolved) {
                                 earlyResolved = true;
-                                console.log('🚀 Early WiFi detection: 192.168.x.x found (regex, Android), resolving early for faster response');
+                                console.log(`🚀 Early WiFi detection: ${ip} found (regex, private IP range), resolving early for faster response`);
                                 const earlyResult = {
                                     privateIP: ip,
                                     allCandidates: allIceCandidates,
                                     hasMDNS: false, // Will be checked later if needed
-                                    has192IP: true,
+                                    has192IP: true, // Keep name for backward compatibility, but now checks all private IPs
                                     isOnWiFi: true
                                 };
                                 pc.close();
@@ -2652,7 +2670,7 @@ function getPrivateIPViaSTUN() {
                 // Check if any HOST candidate indicates WiFi connection
                 // WiFi can be detected via:
                 // 1. .local (mDNS) - used by some browsers/devices
-                // 2. Private IP starting with 192.168.x.x - used by Android and others
+                // 2. Private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - used by Android and others
                 // Both checks happen in parallel on host candidates only
                 const hasMDNS = allIceCandidates.some(c => {
                     // Only check host type candidates
@@ -2675,20 +2693,21 @@ function getPrivateIPViaSTUN() {
                     return false;
                 });
                 
-                // Check for private IP starting with 192.168.x.x (Android WiFi detection)
+                // Check for private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - Android WiFi detection
                 const has192IP = allIceCandidates.some(c => {
                     // Only check host type candidates
                     if (c.type !== 'host') return false;
                     
-                    // Check if address field starts with 192.168.
-                    if (c.address && c.address.startsWith('192.168.')) {
+                    // Check if address field is a private IP
+                    if (c.address && isPrivateIP(c.address)) {
                         return true;
                     }
                     
-                    // Fallback: check candidate string for 192.168.x.x pattern
+                    // Fallback: check candidate string for private IP pattern
                     if (c.candidate) {
-                        const ip192Match = c.candidate.match(/\b192\.168\.\d{1,3}\.\d{1,3}\b/);
-                        if (ip192Match) {
+                        // Match any IP address in the candidate string
+                        const ipMatch = c.candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                        if (ipMatch && isPrivateIP(ipMatch[1])) {
                             return true;
                         }
                     }
@@ -2696,7 +2715,7 @@ function getPrivateIPViaSTUN() {
                     return false;
                 });
                 
-                // WiFi is detected if either .local OR 192.168.x.x is found
+                // WiFi is detected if either .local OR private IP is found
                 const isOnWiFi = hasMDNS || has192IP;
                 
                 if (hasPrivateIP && privateIPs.size > 0) {
@@ -2756,7 +2775,7 @@ function getPrivateIPViaSTUN() {
                 // Check if any HOST candidate indicates WiFi connection
                 // WiFi can be detected via:
                 // 1. .local (mDNS) - used by some browsers/devices
-                // 2. Private IP starting with 192.168.x.x - used by Android and others
+                // 2. Private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - used by Android and others
                 // Both checks happen in parallel on host candidates only
                 const hasMDNS = allIceCandidates.some(c => {
                     // Only check host type candidates
@@ -2779,20 +2798,21 @@ function getPrivateIPViaSTUN() {
                     return false;
                 });
                 
-                // Check for private IP starting with 192.168.x.x (Android WiFi detection)
+                // Check for private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - Android WiFi detection
                 const has192IP = allIceCandidates.some(c => {
                     // Only check host type candidates
                     if (c.type !== 'host') return false;
                     
-                    // Check if address field starts with 192.168.
-                    if (c.address && c.address.startsWith('192.168.')) {
+                    // Check if address field is a private IP
+                    if (c.address && isPrivateIP(c.address)) {
                         return true;
                     }
                     
-                    // Fallback: check candidate string for 192.168.x.x pattern
+                    // Fallback: check candidate string for private IP pattern
                     if (c.candidate) {
-                        const ip192Match = c.candidate.match(/\b192\.168\.\d{1,3}\.\d{1,3}\b/);
-                        if (ip192Match) {
+                        // Match any IP address in the candidate string
+                        const ipMatch = c.candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                        if (ipMatch && isPrivateIP(ipMatch[1])) {
                             return true;
                         }
                     }
@@ -2800,7 +2820,7 @@ function getPrivateIPViaSTUN() {
                     return false;
                 });
                 
-                // WiFi is detected if either .local OR 192.168.x.x is found
+                // WiFi is detected if either .local OR private IP is found
                 const isOnWiFi = hasMDNS || has192IP;
                 
                 if (hasPrivateIP && privateIPs.size > 0) {
@@ -2830,7 +2850,7 @@ async function getPrivateIP() {
         const isOnWiFi = result.isOnWiFi || false;
         
         console.log('✅ Private IP retrieved via STUN:', privateIP);
-        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? '192.168.x.x IP' : 'none');
+        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? 'Private IP' : 'none');
         console.log('📡 WiFi detected:', isOnWiFi, wifiMethod !== 'none' ? `(via ${wifiMethod})` : '');
         return { privateIP, hasMDNS, has192IP, isOnWiFi, allCandidates };
     } catch (error) {
@@ -2842,7 +2862,7 @@ async function getPrivateIP() {
         const isOnWiFi = error.isOnWiFi || false;
         
         console.warn('⚠️ Failed to retrieve private IP:', errorObj.message || errorObj);
-        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? '192.168.x.x IP' : 'none');
+        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? 'Private IP' : 'none');
         console.log('📡 WiFi detected:', isOnWiFi, wifiMethod !== 'none' ? `(via ${wifiMethod})` : '');
         
         // Log ICE candidates even on error
@@ -2854,14 +2874,14 @@ async function getPrivateIP() {
     }
 }
 
-// Check if WiFi is detected in ICE candidates (via .local mDNS or 192.168.x.x IP)
+// Check if WiFi is detected in ICE candidates (via .local mDNS or private IP)
 async function hasMDNSInICE() {
     try {
         const result = await getPrivateIP();
-        // Check for WiFi via either .local (mDNS) OR 192.168.x.x IP (Android)
+        // Check for WiFi via either .local (mDNS) OR private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x)
         const isOnWiFi = result.isOnWiFi || result.hasMDNS || result.has192IP || false;
         
-        const detectionMethod = result.hasMDNS ? 'mDNS (.local)' : (result.has192IP ? '192.168.x.x IP' : 'none');
+        const detectionMethod = result.hasMDNS ? 'mDNS (.local)' : (result.has192IP ? 'Private IP' : 'none');
         console.log(`📡 WiFi check result: ${isOnWiFi ? 'Detected' : 'Not detected'}${detectionMethod !== 'none' ? ` (via ${detectionMethod})` : ''}`);
         return isOnWiFi;
     } catch (error) {
@@ -2926,7 +2946,7 @@ async function checkAndDisableAutoModeIfNoWiFi() {
 }
 
 // Update auto mode button visibility based on WiFi detection in ICE candidates
-// Shows button if WiFi is detected (via .local mDNS or 192.168.x.x IP), hides if not found
+// Shows button if WiFi is detected (via .local mDNS or private IP), hides if not found
 async function updateAutoModeButtonVisibility() {
     // Use the existing auto mode switch element to find its container
     if (!elements.autoModeSwitch) {
@@ -2988,7 +3008,7 @@ async function updateAutoModeButtonVisibility() {
         const isOnWiFi = result.isOnWiFi;
         
         if (isOnWiFi) {
-            // Show auto mode button if WiFi is detected (via .local or 192.168.x.x)
+            // Show auto mode button if WiFi is detected (via .local or private IP)
             autoModeContainer.style.display = '';
             
             // Enable the switch on mobile devices when WiFi is detected
