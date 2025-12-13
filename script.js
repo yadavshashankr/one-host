@@ -3102,13 +3102,26 @@ function formatIPForPeerID(ip) {
     if (ip.includes('.')) {
         const parts = ip.split('.');
         if (parts.length === 4) {
-            // Remove dots and take first 8 digits
-            const digits = parts.join('').substring(0, 8);
-            return digits.padEnd(8, '0'); // Pad if less than 8 digits
+            // Part 1: Include all digits
+            const part1 = parts[0];
+            
+            // Part 2: Include all digits
+            const part2 = parts[1];
+            
+            // Part 3: Take only first 2 digits (or just 1 if it's only 1 digit)
+            const part3 = parts[2].substring(0, 2);
+            
+            // Part 4: Ignored
+            
+            // Combine: part1 + part2 + part3 (first 2 digits)
+            const suffix = part1 + part2 + part3;
+            
+            return suffix; // Length can vary (no padding)
         }
     }
     
     // Handle IPv6 (e.g., "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+    // Keep current IPv6 logic
     if (ip.includes(':')) {
         // Remove colons and take first 8 numeric characters
         const hex = ip.replace(/:/g, '').substring(0, 8);
