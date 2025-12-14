@@ -140,6 +140,9 @@ const fileHistory = {
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
 
+// Track all blob URLs for cleanup
+const activeBlobURLs = new Set(); // Set to track all created blob URLs
+
 // Add recent peers tracking
 let recentPeers = [];
 const MAX_RECENT_PEERS = 5;
@@ -847,6 +850,7 @@ async function handleFileComplete(data) {
                     
                     // Store the blob URL for opening the file
                     const blobUrl = URL.createObjectURL(blob);
+                    activeBlobURLs.add(blobUrl); // Track for cleanup
                     downloadButton.onclick = () => {
                         window.open(blobUrl, '_blank');
                     };
@@ -1977,6 +1981,25 @@ function handleBeforeUnload(event) {
     if (connections.size > 0) {
         sendDisconnectNotification();
     }
+    
+    // Cleanup all blob URLs to prevent memory leaks
+    console.log(`🧹 Cleaning up ${activeBlobURLs.size} blob URL(s) before page unload...`);
+    activeBlobURLs.forEach(url => {
+        try {
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            console.warn('Error revoking blob URL:', e);
+        }
+    });
+    activeBlobURLs.clear();
+    
+    // Clear sent file blobs to free memory
+    console.log(`🧹 Clearing ${sentFileBlobs.size} sent file blob(s)...`);
+    sentFileBlobs.clear();
+    
+    // Clear file chunks
+    console.log(`🧹 Clearing file chunks...`);
+    fileChunks = {};
 }
 
 // Send keep-alive messages to all connected peers
@@ -2122,6 +2145,7 @@ function reconnectToPeer(peerId) {
 // Function to download a blob
 function downloadBlob(blob, fileName, fileId) {
     const url = URL.createObjectURL(blob);
+    activeBlobURLs.add(url); // Track for cleanup
     const a = document.createElement('a');
     a.href = url;
     a.download = fileName;
@@ -2150,6 +2174,7 @@ function downloadBlob(blob, fileName, fileId) {
                 
                 // Store the blob URL for opening the file
                 const openUrl = URL.createObjectURL(blob);
+                activeBlobURLs.add(openUrl); // Track for cleanup
                 downloadButton.onclick = () => {
                     // Track file open click
                     Analytics.track('file_open_clicked', {
@@ -2164,7 +2189,10 @@ function downloadBlob(blob, fileName, fileId) {
     }
 
     // Cleanup the download URL
-    setTimeout(() => URL.revokeObjectURL(url), 100);
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+        activeBlobURLs.delete(url); // Remove from tracking
+    }, 100);
 }
 
 // Function to handle simultaneous download request
