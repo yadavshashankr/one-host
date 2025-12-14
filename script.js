@@ -34,7 +34,23 @@ const Analytics = {
     // Get or create session ID
     getSessionId: function() {
         if (!this._sessionId) {
-            this._sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            // Use cryptographically secure random number generator
+            let randomString = '';
+            if (window.crypto && window.crypto.getRandomValues) {
+                // Generate 9 random bytes and convert to base36
+                const randomBytes = new Uint8Array(9);
+                window.crypto.getRandomValues(randomBytes);
+                // Convert each byte to base36 and join
+                randomString = Array.from(randomBytes)
+                    .map(byte => byte.toString(36))
+                    .join('')
+                    .substring(0, 9);
+            } else {
+                // Fallback for very old browsers (shouldn't happen in modern browsers)
+                console.warn('crypto.getRandomValues not available, using Math.random (insecure)');
+                randomString = Math.random().toString(36).substr(2, 9);
+            }
+            this._sessionId = 'session_' + Date.now() + '_' + randomString;
         }
         return this._sessionId;
     },
