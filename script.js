@@ -1416,7 +1416,9 @@ function formatFileSize(bytes) {
 function showNotification(message, type = 'info', duration = 5000) {
     const notification = document.createElement('div');
     notification.className = `notification ${type}`;
-    notification.textContent = message.charAt(0).toUpperCase() + message.slice(1);  // Ensure sentence case
+    // Support line breaks by replacing \n with <br> and using innerHTML
+    const formattedMessage = message.charAt(0).toUpperCase() + message.slice(1).replace(/\n/g, '<br>');
+    notification.innerHTML = formattedMessage;
     
     elements.notifications.appendChild(notification);
     
@@ -3665,7 +3667,7 @@ async function switchToAutoMode() {
         }
         
         // Store notification reference and show without auto-dismiss (duration = 0 means persistent)
-        autoModeNotification = showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.', 'success', 0);
+        autoModeNotification = showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.\n\nAuto mode works only on WiFi / Local Network.', 'success', 0);
         
         // Track auto mode enable
         Analytics.track('auto_mode_enabled', {
