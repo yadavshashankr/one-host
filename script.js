@@ -1818,6 +1818,13 @@ function initAutoModeLongPress() {
         e.preventDefault();
     });
     
+    // Prevent clicking on "Auto" text from toggling the switch
+    autoLabel.addEventListener('click', (e) => {
+        e.preventDefault(); // Prevent default label behavior
+        e.stopPropagation(); // Stop event from bubbling to label
+        console.log('🖱️ Click on "Auto" text prevented - use switch to toggle');
+    });
+    
     // Handle the long press action
     function handleLongPress() {
         if (connections.size === 0) {
