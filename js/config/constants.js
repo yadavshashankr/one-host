@@ -63,7 +63,8 @@ const MESSAGE_TYPES = {
     DISCONNECT_NOTIFICATION: 'disconnect-notification',
     SIMULTANEOUS_DOWNLOAD_REQUEST: 'simultaneous-download-request',
     SIMULTANEOUS_DOWNLOAD_READY: 'simultaneous-download-ready',
-    SIMULTANEOUS_DOWNLOAD_START: 'simultaneous-download-start'
+    SIMULTANEOUS_DOWNLOAD_START: 'simultaneous-download-start',
+    FORCE_DISABLE_AUTO_MODE: 'force-disable-auto-mode'
 };
 
 // PeerJS Configuration

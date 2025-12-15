@@ -658,6 +658,9 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                         connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
                     // No notification - status change will inform the user
                     break;
+                case MESSAGE_TYPES.FORCE_DISABLE_AUTO_MODE:
+                    await handleForceDisableAutoMode(data, conn);
+                    break;
                 case 'file-info':
                     // Handle file info without blob
                     const fileInfo = {
@@ -801,6 +804,49 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
 // Helper function to generate unique file ID
 function generateFileId(file) {
     return `${file.name}-${file.size}`;
+}
+
+// Handle force disable auto mode command from peer
+async function handleForceDisableAutoMode(data, conn) {
+    console.log(`🔴 Received force disable auto mode command from peer: ${conn.peer}`);
+    
+    try {
+        // Force disable auto mode regardless of state or connections
+        let disabled = false;
+        const wasHosting = autoModeEnabled;
+        const wasConnectedAsPeer = autoModeConnectedAsPeer;
+        
+        // If hosting auto mode, disable it
+        if (autoModeEnabled) {
+            console.log('🔄 Force disabling auto mode (hosting mode)');
+            await switchFromAutoMode();
+            disabled = true;
+        }
+        
+        // If connected as peer to auto mode, disconnect
+        if (autoModeConnectedAsPeer) {
+            console.log('🔄 Force disconnecting from auto mode peer');
+            await switchFromPeerMode();
+            disabled = true;
+        }
+        
+        if (disabled) {
+            showNotification('Auto mode force disabled by peer request', 'info');
+            
+            // Track analytics
+            Analytics.track('auto_mode_force_disabled_by_peer', {
+                device_type: Analytics.getDeviceType(),
+                sender_id: data.senderId || conn.peer,
+                was_hosting: wasHosting,
+                was_connected_as_peer: wasConnectedAsPeer
+            });
+        } else {
+            console.log('⚠️ Auto mode not active, nothing to disable');
+        }
+    } catch (error) {
+        console.error('❌ Error force disabling auto mode:', error);
+        showNotification('Failed to disable auto mode', 'error');
+    }
 }
 
 // Handle file header
@@ -1624,6 +1670,7 @@ function init() {
             // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
     initAutoModeToggle(); // Initialize auto mode toggle
+    initAutoModeLongPress(); // Initialize long press detection on "Auto" text
     // Note: updateAutoModeButtonVisibility() will be called after peer ID is generated
     // in the peer.on('open') handler to ensure DOM is ready
     
@@ -1675,6 +1722,146 @@ function initAutoModeToggle() {
     updateAutoModeToggleState();
     
     console.log('Auto mode toggle initialized');
+}
+
+// Initialize long press detection on "Auto" text
+function initAutoModeLongPress() {
+    const autoLabel = document.querySelector('.toggle-label');
+    if (!autoLabel) {
+        console.error('Auto label element not found');
+        return;
+    }
+    
+    let longPressTimer = null;
+    let isLongPressing = false;
+    const LONG_PRESS_DURATION = 5000; // 5 seconds
+    
+    // Visual feedback during long press
+    function showLongPressFeedback() {
+        autoLabel.style.opacity = '0.5';
+        autoLabel.style.transform = 'scale(0.95)';
+    }
+    
+    function resetLongPressFeedback() {
+        autoLabel.style.opacity = '';
+        autoLabel.style.transform = '';
+    }
+    
+    // Mouse events (desktop)
+    autoLabel.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // Prevent text selection
+        isLongPressing = true;
+        showLongPressFeedback();
+        
+        longPressTimer = setTimeout(() => {
+            if (isLongPressing) {
+                handleLongPress();
+                isLongPressing = false;
+            }
+        }, LONG_PRESS_DURATION);
+    });
+    
+    autoLabel.addEventListener('mouseup', () => {
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    autoLabel.addEventListener('mouseleave', () => {
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    // Touch events (mobile)
+    autoLabel.addEventListener('touchstart', (e) => {
+        e.preventDefault(); // Prevent default touch behavior
+        isLongPressing = true;
+        showLongPressFeedback();
+        
+        longPressTimer = setTimeout(() => {
+            if (isLongPressing) {
+                handleLongPress();
+                isLongPressing = false;
+            }
+        }, LONG_PRESS_DURATION);
+    });
+    
+    autoLabel.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    autoLabel.addEventListener('touchcancel', (e) => {
+        e.preventDefault();
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    // Prevent context menu on long press
+    autoLabel.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+    });
+    
+    // Handle the long press action
+    function handleLongPress() {
+        if (connections.size === 0) {
+            showNotification('No connected peers to send disable command', 'warning');
+            resetLongPressFeedback();
+            return;
+        }
+        
+        console.log('🔴 Long press detected on "Auto" - sending force disable command to all peers');
+        
+        // Send force disable message to all connected peers
+        let sentCount = 0;
+        connections.forEach((conn, peerId) => {
+            if (conn && conn.open) {
+                try {
+                    conn.send({
+                        type: MESSAGE_TYPES.FORCE_DISABLE_AUTO_MODE,
+                        timestamp: Date.now(),
+                        senderId: peer.id
+                    });
+                    sentCount++;
+                    console.log(`✅ Force disable command sent to peer: ${peerId}`);
+                } catch (error) {
+                    console.error(`❌ Failed to send force disable to peer ${peerId}:`, error);
+                }
+            }
+        });
+        
+        if (sentCount > 0) {
+            showNotification(`Force disable command sent to ${sentCount} peer(s)`, 'success');
+            
+            // Track analytics
+            Analytics.track('auto_mode_force_disable_sent', {
+                device_type: Analytics.getDeviceType(),
+                peer_count: sentCount
+            });
+        } else {
+            showNotification('Failed to send force disable command', 'error');
+        }
+        
+        resetLongPressFeedback();
+    }
+    
+    console.log('✅ Long press detection initialized on "Auto" text');
 }
 
 // Social Media Toggle Functionality
