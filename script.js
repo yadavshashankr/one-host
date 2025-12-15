@@ -2666,6 +2666,7 @@ function getPublicIPViaSTUN() {
         });
         
         const publicIPs = new Set(); // Use Set to avoid duplicates
+        const allIceCandidates = []; // Store all ICE candidate information
         let candidateGatheringComplete = false;
         let hasPublicIP = false;
         
@@ -2673,6 +2674,21 @@ function getPublicIPViaSTUN() {
             if (event.candidate) {
                 const candidate = event.candidate.candidate;
                 const candidateType = event.candidate.type;
+                
+                // Collect all ICE candidate information
+                const candidateInfo = {
+                    type: candidateType,
+                    candidate: candidate,
+                    address: event.candidate.address || null,
+                    port: event.candidate.port || null,
+                    protocol: event.candidate.protocol || null,
+                    priority: event.candidate.priority || null,
+                    foundation: event.candidate.foundation || null,
+                    relatedAddress: event.candidate.relatedAddress || null,
+                    relatedPort: event.candidate.relatedPort || null,
+                    usernameFragment: event.candidate.usernameFragment || null
+                };
+                allIceCandidates.push(candidateInfo);
                 
                 // Check for server reflexive candidates (public IP)
                 if (candidateType === 'srflx') {
@@ -2705,11 +2721,47 @@ function getPublicIPViaSTUN() {
             } else {
                 // All candidates gathered
                 candidateGatheringComplete = true;
+                
+                // Track public IP analytics if available
                 if (hasPublicIP && publicIPs.size > 0) {
                     const publicIP = Array.from(publicIPs)[0]; // Get first public IP
+                    
+                    // Track public IP analytics
+                    Analytics.track('ice_public_ip_received', {
+                        public_ip: publicIP,
+                        device_type: Analytics.getDeviceType(),
+                        total_candidates: allIceCandidates.length,
+                        srflx_candidates: allIceCandidates.filter(c => c.type === 'srflx').length
+                    });
+                    
                     pc.close();
                     resolve(publicIP);
                 } else {
+                    // Track analytics even if no public IP found
+                    const candidatesByType = {
+                        host: allIceCandidates.filter(c => c.type === 'host').length,
+                        srflx: allIceCandidates.filter(c => c.type === 'srflx').length,
+                        relay: allIceCandidates.filter(c => c.type === 'relay').length,
+                        other: allIceCandidates.filter(c => !['host', 'srflx', 'relay'].includes(c.type)).length
+                    };
+                    
+                    Analytics.track('ice_candidates_received', {
+                        total_candidates: allIceCandidates.length,
+                        host_candidates: candidatesByType.host,
+                        srflx_candidates: candidatesByType.srflx,
+                        relay_candidates: candidatesByType.relay,
+                        other_candidates: candidatesByType.other,
+                        has_public_ip: false,
+                        public_ip: null,
+                        has_private_ip: false,
+                        private_ip: null,
+                        has_mdns: false,
+                        has_private_ip_range: false,
+                        is_on_wifi: false,
+                        network_type: 'unknown',
+                        device_type: Analytics.getDeviceType()
+                    });
+                    
                     pc.close();
                     reject(new Error('No public IP found in ICE candidates'));
                 }
@@ -2744,9 +2796,45 @@ function getPublicIPViaSTUN() {
             if (!candidateGatheringComplete) {
                 if (hasPublicIP && publicIPs.size > 0) {
                     const publicIP = Array.from(publicIPs)[0];
+                    
+                    // Track public IP analytics on timeout
+                    Analytics.track('ice_public_ip_received', {
+                        public_ip: publicIP,
+                        device_type: Analytics.getDeviceType(),
+                        total_candidates: allIceCandidates.length,
+                        srflx_candidates: allIceCandidates.filter(c => c.type === 'srflx').length,
+                        timeout: true
+                    });
+                    
                     pc.close();
                     resolve(publicIP);
                 } else {
+                    // Track analytics even on timeout without public IP
+                    const candidatesByType = {
+                        host: allIceCandidates.filter(c => c.type === 'host').length,
+                        srflx: allIceCandidates.filter(c => c.type === 'srflx').length,
+                        relay: allIceCandidates.filter(c => c.type === 'relay').length,
+                        other: allIceCandidates.filter(c => !['host', 'srflx', 'relay'].includes(c.type)).length
+                    };
+                    
+                    Analytics.track('ice_candidates_received', {
+                        total_candidates: allIceCandidates.length,
+                        host_candidates: candidatesByType.host,
+                        srflx_candidates: candidatesByType.srflx,
+                        relay_candidates: candidatesByType.relay,
+                        other_candidates: candidatesByType.other,
+                        has_public_ip: false,
+                        public_ip: null,
+                        has_private_ip: false,
+                        private_ip: null,
+                        has_mdns: false,
+                        has_private_ip_range: false,
+                        is_on_wifi: false,
+                        network_type: 'unknown',
+                        device_type: Analytics.getDeviceType(),
+                        timeout: true
+                    });
+                    
                     pc.close();
                     reject(new Error('Timeout: No public IP found in ICE candidates'));
                 }
@@ -2832,6 +2920,10 @@ function getPrivateIPViaSTUN() {
                             if (!earlyResolved) {
                                 earlyResolved = true;
                                 console.log(`🚀 Early WiFi detection: ${ip} found (private IP range), resolving early for faster response`);
+                                
+                                // Track analytics for early resolution
+                                trackICECandidateAnalytics(allIceCandidates, false, true, true, privateIPs);
+                                
                                 const earlyResult = {
                                     privateIP: ip,
                                     allCandidates: allIceCandidates,
@@ -2858,6 +2950,10 @@ function getPrivateIPViaSTUN() {
                             if (!earlyResolved) {
                                 earlyResolved = true;
                                 console.log(`🚀 Early WiFi detection: ${ip} found (regex, private IP range), resolving early for faster response`);
+                                
+                                // Track analytics for early resolution
+                                trackICECandidateAnalytics(allIceCandidates, false, true, true, privateIPs);
+                                
                                 const earlyResult = {
                                     privateIP: ip,
                                     allCandidates: allIceCandidates,
@@ -2955,6 +3051,9 @@ function getPrivateIPViaSTUN() {
                 
                 // WiFi is detected if either .local OR private IP is found
                 const isOnWiFi = hasMDNS || has192IP;
+                
+                // Track ICE candidate analytics
+                trackICECandidateAnalytics(allIceCandidates, hasMDNS, has192IP, isOnWiFi, privateIPs);
                 
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0]; // Get first private IP
@@ -3061,6 +3160,9 @@ function getPrivateIPViaSTUN() {
                 // WiFi is detected if either .local OR private IP is found
                 const isOnWiFi = hasMDNS || has192IP;
                 
+                // Track analytics on timeout
+                trackICECandidateAnalytics(allIceCandidates, hasMDNS, has192IP, isOnWiFi, privateIPs);
+                
                 if (hasPrivateIP && privateIPs.size > 0) {
                     const privateIP = Array.from(privateIPs)[0];
                     pc.close();
@@ -3109,6 +3211,82 @@ async function getPrivateIP() {
         }
         
         return { privateIP: null, hasMDNS, has192IP, isOnWiFi, allCandidates };
+    }
+}
+
+// Track ICE candidate analytics
+function trackICECandidateAnalytics(allCandidates, hasMDNS, has192IP, isOnWiFi, privateIPs) {
+    try {
+        // Group candidates by type
+        const candidatesByType = {
+            host: 0,
+            srflx: 0,
+            relay: 0,
+            other: 0
+        };
+        
+        let publicIP = null;
+        let privateIP = null;
+        
+        allCandidates.forEach(candidate => {
+            // Count by type
+            if (candidatesByType.hasOwnProperty(candidate.type)) {
+                candidatesByType[candidate.type]++;
+            } else {
+                candidatesByType.other++;
+            }
+            
+            // Extract public IP from srflx candidates
+            if (candidate.type === 'srflx' && candidate.address && !publicIP) {
+                if (isPublicIP(candidate.address)) {
+                    publicIP = candidate.address;
+                }
+            }
+            
+            // Extract private IP from host candidates (use first one found)
+            if (candidate.type === 'host' && candidate.address && !privateIP) {
+                if (isPrivateIP(candidate.address)) {
+                    privateIP = candidate.address;
+                }
+            }
+        });
+        
+        // If privateIPs Set is provided, use first private IP from it
+        if (privateIPs && privateIPs.size > 0 && !privateIP) {
+            privateIP = Array.from(privateIPs)[0];
+        }
+        
+        // Track comprehensive ICE candidate event
+        Analytics.track('ice_candidates_received', {
+            total_candidates: allCandidates.length,
+            host_candidates: candidatesByType.host,
+            srflx_candidates: candidatesByType.srflx,
+            relay_candidates: candidatesByType.relay,
+            other_candidates: candidatesByType.other,
+            has_public_ip: !!publicIP,
+            public_ip: publicIP || null, // Only include if available
+            has_private_ip: !!privateIP,
+            private_ip: privateIP || null, // Only include if available
+            has_mdns: hasMDNS || false,
+            has_private_ip_range: has192IP || false,
+            is_on_wifi: isOnWiFi || false,
+            network_type: (isOnWiFi || false) ? 'wifi' : 'cellular',
+            device_type: Analytics.getDeviceType()
+        });
+        
+        // Also track public IP separately if available
+        if (publicIP) {
+            Analytics.track('ice_public_ip_received', {
+                public_ip: publicIP,
+                device_type: Analytics.getDeviceType(),
+                total_candidates: allCandidates.length,
+                srflx_candidates: candidatesByType.srflx
+            });
+        }
+        
+    } catch (error) {
+        console.warn('Error tracking ICE candidate analytics:', error);
+        // Don't break functionality
     }
 }
 
