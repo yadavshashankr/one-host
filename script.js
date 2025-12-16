@@ -132,6 +132,9 @@ const elements = {
     autoModeSwitch: document.getElementById('auto-mode-switch')
 };
 
+// Initialize screen wake manager (class loaded from js/services/screenWake.js)
+const screenWake = new ScreenWakeManager();
+
 // State
 let peer = null;
 let connections = new Map(); // Map to store multiple connections
@@ -457,6 +460,10 @@ function setupPeerHandlers() {
         console.log('Incoming connection from:', conn.peer);
         connections.set(conn.peer, conn);
         updateConnectionStatus('connecting', 'Incoming connection...');
+        
+        // Activate screen wake when incoming connection is detected
+        screenWake.activateFromConnection();
+        
         setupConnectionHandlers(conn);
     });
 
@@ -559,6 +566,9 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         isConnectionReady = true;
         updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
         elements.fileTransferSection.classList.remove('hidden');
+        
+        // Activate screen wake when connection is established
+        screenWake.activateFromConnection();
         
         // Dismiss auto mode notification when a peer connects while auto mode is enabled
         // This indicates an auto mode connection was successful
@@ -735,6 +745,10 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         
         updateConnectionStatus(connections.size > 0 ? 'connected' : '', 
             connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
+        
+        // Update screen wake state based on remaining connections
+        screenWake.updateConnectionState(connections.size);
+        
         if (connections.size === 0) {
             // No notification - status change will inform the user
         } else {
@@ -2154,6 +2168,16 @@ function initConnectionKeepAlive() {
     
     // Handle beforeunload event
     window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    // Initialize screen wake manager
+    screenWake.init();
+    
+    // Activate screen wake on ANY user interaction (touch/click anywhere)
+    ['click', 'touchstart', 'mousedown'].forEach(event => {
+        document.addEventListener(event, () => {
+            screenWake.activateFromTouch();
+        }, { passive: true });
+    });
 }
 
 // Handle page visibility changes with improved mobile handling
@@ -2193,6 +2217,9 @@ function handleBeforeUnload(event) {
     if (connections.size > 0) {
         sendDisconnectNotification();
     }
+    
+    // Stop screen wake on page unload
+    screenWake.stop();
     
     // Cleanup all blob URLs to prevent memory leaks
     console.log(`🧹 Cleaning up ${activeBlobURLs.size} blob URL(s) before page unload...`);
