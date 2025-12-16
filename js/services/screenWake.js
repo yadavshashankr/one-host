@@ -130,23 +130,26 @@ class ScreenWakeManager {
 
         const video = document.createElement('video');
         video.id = 'keepAwakeVideo';
-        video.width = 1;
-        video.height = 1;
+        video.width = 150;
+        video.height = 150;
         video.muted = true;
         video.loop = true;
         video.playsInline = true;
         
-        // iOS-specific: Video must be slightly visible (not completely hidden)
-        // Position at bottom-right corner, 1x1 pixel, very low opacity
+        // iOS-specific: Video must be visible for iOS to detect active media
+        // Position at bottom-right corner, 150x150 pixels, very low opacity
         video.style.cssText = `
             position: fixed;
             bottom: 0;
             right: 0;
-            width: 1px;
-            height: 1px;
+            width: 150px;
+            height: 150px;
             opacity: 0.01;
             pointer-events: none;
             z-index: -9999;
+            overflow: hidden;
+            border: none;
+            outline: none;
         `;
         
         video.src = this.videoPath;
