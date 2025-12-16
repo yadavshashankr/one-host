@@ -135,7 +135,20 @@ class ScreenWakeManager {
         video.muted = true;
         video.loop = true;
         video.playsInline = true;
-        video.style.cssText = 'position: fixed; top: -9999px; opacity: 0; pointer-events: none;';
+        
+        // iOS-specific: Video must be slightly visible (not completely hidden)
+        // Position at bottom-right corner, 1x1 pixel, very low opacity
+        video.style.cssText = `
+            position: fixed;
+            bottom: 0;
+            right: 0;
+            width: 1px;
+            height: 1px;
+            opacity: 0.01;
+            pointer-events: none;
+            z-index: -9999;
+        `;
+        
         video.src = this.videoPath;
 
         // Keep playing if paused
