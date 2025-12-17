@@ -1673,6 +1673,54 @@ elements.fileInput.addEventListener('change', (e) => {
 });
 
 // Initialize the application
+// Check if tip should be shown in this tab (once per tab, not on refresh)
+function shouldShowTipInTab(tipKey = 'wake_lock_tip') {
+    try {
+        // Check if sessionStorage is available
+        if (typeof sessionStorage === 'undefined') {
+            console.warn('sessionStorage not available');
+            return false;
+        }
+        
+        // Check if tip has been shown in THIS tab session
+        const tipShown = sessionStorage.getItem(tipKey);
+        if (tipShown === 'true') {
+            return false; // Already shown in this tab
+        }
+        
+        // Get navigation type
+        let navigationType = null;
+        
+        // Try modern Performance Navigation API first
+        if (performance.getEntriesByType) {
+            const navEntries = performance.getEntriesByType('navigation');
+            if (navEntries.length > 0) {
+                navigationType = navEntries[0].type;
+            }
+        }
+        
+        // Fallback to legacy API
+        if (navigationType === null && performance.navigation) {
+            // Legacy API uses numbers: 0=navigate, 1=reload, 2=back_forward
+            const navType = performance.navigation.type;
+            navigationType = navType === 0 ? 'navigate' : 
+                           navType === 1 ? 'reload' : 
+                           navType === 2 ? 'back_forward' : null;
+        }
+        
+        // Only show on 'navigate' (first visit in tab)
+        if (navigationType === 'navigate') {
+            sessionStorage.setItem(tipKey, 'true');
+            return true;
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('Error checking tip visibility:', error);
+        return false; // Fail silently
+    }
+}
+
 function init() {
     if (!checkBrowserSupport()) {
         return;
@@ -1683,6 +1731,15 @@ function init() {
     loadRecentPeers();
     checkUrlForPeerId(); // Check URL for peer ID on load
     initConnectionKeepAlive(); // Initialize connection keep-alive system
+    
+    // Show wake lock tip once per tab on first navigation (not on refresh)
+    if (shouldShowTipInTab('wake_lock_tip')) {
+        showNotification(
+            '💡 Tip:\n\n Tap anywhere once or interact with the page to enable Wake Mode.\nThis keeps the device awake, prevents disconnections, and ensures seamless file transfers.',
+            'info',
+            5000 // 5 seconds duration
+        );
+    }
             // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
     initAutoModeToggle(); // Initialize auto mode toggle
