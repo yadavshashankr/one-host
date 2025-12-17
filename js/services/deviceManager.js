@@ -7,6 +7,52 @@ class DeviceManager {
         this.cachedResults = {}; // Cache detection results for performance
     }
 
+    // Get screen information for detection
+    getScreenInfo() {
+        return {
+            width: screen.width,
+            height: screen.height,
+            availWidth: screen.availWidth,
+            availHeight: screen.availHeight,
+            pixelRatio: window.devicePixelRatio || 1,
+            viewportWidth: window.innerWidth || document.documentElement.clientWidth,
+            viewportHeight: window.innerHeight || document.documentElement.clientHeight,
+            hasTouch: this.hasTouch(),
+            maxTouchPoints: navigator.maxTouchPoints || 0
+        };
+    }
+
+    // Check if screen size suggests tablet/mobile
+    isTabletByScreenSize() {
+        const screenInfo = this.getScreenInfo();
+        const minDimension = Math.min(screenInfo.width, screenInfo.height);
+        const maxDimension = Math.max(screenInfo.width, screenInfo.height);
+        const aspectRatio = maxDimension / minDimension;
+        
+        // Tablets typically have:
+        // - Smaller screens than desktops (< 1920px on smaller side)
+        // - Aspect ratio between 1.3 and 2.5 (portrait/landscape)
+        // - Pixel ratio often > 1 (retina/high-DPI)
+        
+        const isSmallScreen = maxDimension < 1920; // Desktop monitors are usually >= 1920px
+        const isTabletAspectRatio = aspectRatio >= 1.3 && aspectRatio <= 2.5;
+        const hasHighDPI = screenInfo.pixelRatio > 1;
+        
+        return isSmallScreen && (isTabletAspectRatio || hasHighDPI);
+    }
+
+    // Check viewport dimensions (more reliable than screen for responsive design)
+    isTabletByViewport() {
+        const screenInfo = this.getScreenInfo();
+        const minViewport = Math.min(screenInfo.viewportWidth, screenInfo.viewportHeight);
+        const maxViewport = Math.max(screenInfo.viewportWidth, screenInfo.viewportHeight);
+        
+        // Tablets typically have viewport:
+        // - Between 600px and 1200px on smaller dimension
+        // - Max dimension <= 1600px
+        return minViewport >= 600 && minViewport <= 1200 && maxViewport <= 1600;
+    }
+
     // Check if device is mobile or tablet (not desktop/laptop)
     isMobileOrTablet() {
         // Check cache first
@@ -14,22 +60,42 @@ class DeviceManager {
             return this.cachedResults.isMobileOrTablet;
         }
 
-        // Check for mobile/tablet user agents
+        // Method 1: User Agent Detection (Primary)
         const mobilePattern = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i;
         const isMobileUA = mobilePattern.test(this.userAgent);
         
-        // Check for touch capability
+        // Method 2: Check for Android specifically (even without "mobile")
+        const isAndroid = /android/i.test(this.userAgent);
+        
+        // Method 3: Screen Size Detection (Secondary)
+        const isTabletByScreen = this.isTabletByScreenSize();
+        
+        // Method 4: Viewport Detection (Tertiary)
+        const isTabletByViewport = this.isTabletByViewport();
+        
+        // Method 5: Touch Capability
         const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
         
-        // Exclude desktop browsers explicitly
+        // Method 6: Exclude desktop browsers explicitly
         const isDesktopUA = /windows|macintosh|linux/i.test(this.userAgent) && 
                            !/android|iphone|ipad|ipod/i.test(this.userAgent);
         
-        // Special case: iPad on macOS (Safari reports as Mac)
+        // Method 7: iPad on macOS (Safari reports as Mac)
         const isIPadOnMac = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
         
-        // Return true if mobile/tablet UA and not desktop, or if iPad on Mac, or if touch-enabled and not desktop
-        const result = isMobileUA || isIPadOnMac || (hasTouch && !isDesktopUA);
+        // Combined logic:
+        // - Mobile UA (includes Android phones)
+        // - Android UA (catches Android tablets even without "mobile")
+        // - iPad on Mac
+        // - Tablet by screen size AND has touch (catches Android tablets)
+        // - Tablet by viewport AND has touch (catches Android tablets)
+        // - Touch-enabled but NOT desktop UA
+        const result = isMobileUA || 
+                       (isAndroid && hasTouch) || // Android devices (phones + tablets)
+                       isIPadOnMac || 
+                       (isTabletByScreen && hasTouch) || 
+                       (isTabletByViewport && hasTouch) || 
+                       (hasTouch && !isDesktopUA);
         
         // Cache the result
         this.cachedResults.isMobileOrTablet = result;
@@ -94,6 +160,24 @@ class DeviceManager {
     // Check if device has touch capability
     hasTouch() {
         return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    }
+
+    // Check if device is specifically a tablet (not phone)
+    isTablet() {
+        if (this.cachedResults.isTablet !== undefined) {
+            return this.cachedResults.isTablet;
+        }
+        
+        const screenInfo = this.getScreenInfo();
+        const minDimension = Math.min(screenInfo.width, screenInfo.height);
+        
+        // Tablets typically have larger screens than phones
+        // Phones: usually < 600px on smaller dimension
+        // Tablets: usually >= 600px on smaller dimension
+        const result = this.isMobileOrTablet() && minDimension >= 600;
+        
+        this.cachedResults.isTablet = result;
+        return result;
     }
 
     // Clear cache (useful for testing or if user agent changes)
