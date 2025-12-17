@@ -2173,9 +2173,20 @@ function initConnectionKeepAlive() {
     screenWake.init();
     
     // Activate screen wake on ANY user interaction (touch/click anywhere)
+    // This also handles scroll-initiated touches (touchstart fires when scrolling begins)
     ['click', 'touchstart', 'mousedown'].forEach(event => {
         document.addEventListener(event, () => {
-            screenWake.activateFromTouch();
+            screenWake.activateFromUserInteraction('touch');
+            
+            // If there's a pending request (e.g., from scroll), try to fulfill it
+            if (screenWake.pendingWakeLockRequest && screenWake.isActive) {
+                screenWake.requestWakeLock().then(success => {
+                    if (success) {
+                        screenWake.pendingWakeLockRequest = false;
+                        console.log('✅ Wake Lock re-requested after scroll + touch');
+                    }
+                });
+            }
         }, { passive: true });
     });
 }

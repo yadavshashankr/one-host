@@ -9,12 +9,26 @@ class ScreenWakeManager {
         this.isActive = false;
         this.activatedByTouch = false;
         this.activatedByConnection = false;
+        // Scroll handling properties
+        this.lastUserGestureTime = 0;
+        this.USER_GESTURE_WINDOW_MS = 1000; // 1 second window
+        this.scrollTimeout = null;
+        this.lastScrollTime = 0;
+        this.SCROLL_DEBOUNCE_MS = 500; // Only check every 500ms
     }
 
     async init() {
         // Setup Wake Lock API if supported
         if (this.isSupported) {
             this.setupWakeLock();
+            this.setupScrollHandling();
+        }
+        
+        // Check page readiness (especially important for iOS)
+        if (this.isIOS()) {
+            if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+                console.log('⚠️ Page not ready - Wake Lock will activate on first touch (iOS)');
+            }
         }
         
         // Track initialization (Analytics is global)
@@ -22,31 +36,63 @@ class ScreenWakeManager {
             Analytics.track('screen_wake_initialized', {
                 wake_lock_supported: this.isSupported,
                 is_ios: this.isIOS(),
-                device_type: Analytics.getDeviceType()
+                device_type: Analytics.getDeviceType(),
+                page_visible: document.visibilityState === 'visible',
+                page_focused: document.hasFocus()
             });
         }
     }
 
-    async activateFromTouch() {
+    // Record when user gesture occurs (for scroll handling)
+    recordUserGesture() {
+        this.lastUserGestureTime = Date.now();
+    }
+    
+    // Check if we have a recent user gesture
+    hasRecentUserGesture() {
+        return (Date.now() - this.lastUserGestureTime) < this.USER_GESTURE_WINDOW_MS;
+    }
+
+    async activateFromUserInteraction(source = 'touch') {
+        // Always set this flag on any user interaction
         if (!this.activatedByTouch) {
             this.activatedByTouch = true;
-            
-            // Request Wake Lock immediately on user interaction (iOS requirement)
-            if (this.isSupported && !this.wakeLock) {
-                await this.requestWakeLock();
-            }
-            
-            this.isActive = true;
-            console.log('✅ Screen wake activated via touch');
-            
-            // Track activation
-            if (typeof Analytics !== 'undefined') {
-                Analytics.track('screen_wake_activated', {
-                    activation_source: 'touch',
-                    wake_lock_active: !!this.wakeLock
-                });
-            }
         }
+        
+        // Record the user gesture (for scroll handling)
+        this.recordUserGesture();
+        
+        // On iOS, ensure page is visible and focused before requesting
+        if (this.isSupported && !this.wakeLock) {
+            if (this.isIOS()) {
+                // Wait for page to be visible and focused
+                if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+                    console.log('⚠️ Waiting for page to be visible/focused before requesting Wake Lock (iOS)');
+                    // Set flag to request on next touch or when page becomes ready
+                    this.pendingWakeLockRequest = true;
+                    this.isActive = true; // Still mark as active
+                    return;
+                }
+            }
+            
+            await this.requestWakeLock();
+        }
+        
+        this.isActive = true;
+        console.log(`✅ Screen wake activated via ${source}`);
+        
+        // Track activation
+        if (typeof Analytics !== 'undefined') {
+            Analytics.track('screen_wake_activated', {
+                activation_source: source,
+                wake_lock_active: !!this.wakeLock
+            });
+        }
+    }
+    
+    // Keep backward compatibility
+    async activateFromTouch() {
+        return this.activateFromUserInteraction('touch');
     }
 
     async activateFromConnection() {
@@ -153,9 +199,14 @@ class ScreenWakeManager {
         // Handle visibility changes - re-request wake lock when page becomes visible
         document.addEventListener('visibilitychange', async () => {
             if (document.visibilityState === 'visible' && this.isActive && !this.wakeLock) {
-                // On iOS, this requires user interaction
-                // Set flag to request on next user interaction
+                // On iOS, also check focus
                 if (this.isIOS()) {
+                    if (!document.hasFocus()) {
+                        this.pendingWakeLockRequest = true;
+                        console.log('⚠️ Wake Lock pending - waiting for focus (iOS requirement)');
+                        return;
+                    }
+                    // Page is visible and focused, but still needs user interaction
                     this.pendingWakeLockRequest = true;
                     console.log('⚠️ Wake Lock needs re-request after visibility change (iOS requirement)');
                 } else {
@@ -170,9 +221,21 @@ class ScreenWakeManager {
             }
         });
         
+        // Handle focus changes (iOS requirement)
+        window.addEventListener('focus', async () => {
+            if (this.isIOS() && this.isActive && !this.wakeLock && this.pendingWakeLockRequest) {
+                // Page now has focus, but still needs user interaction
+                console.log('✅ Page focused - Wake Lock will be requested on next touch (iOS)');
+            }
+        });
+        
         // Re-request on user interaction (iOS requirement)
         ['click', 'touchstart', 'mousedown'].forEach(event => {
             document.addEventListener(event, () => {
+                // Record gesture for scroll handling
+                this.recordUserGesture();
+                
+                // Handle pending requests
                 if (this.pendingWakeLockRequest && this.isActive) {
                     this.requestWakeLock().then(success => {
                         if (success) {
@@ -184,9 +247,60 @@ class ScreenWakeManager {
             }, { once: false, passive: true });
         });
     }
+    
+    setupScrollHandling() {
+        window.addEventListener('scroll', () => {
+            const now = Date.now();
+            
+            // Debounce scroll events
+            if (now - this.lastScrollTime < this.SCROLL_DEBOUNCE_MS) {
+                return;
+            }
+            this.lastScrollTime = now;
+            
+            // Clear existing timeout
+            if (this.scrollTimeout) {
+                clearTimeout(this.scrollTimeout);
+            }
+            
+            // Check if we need to re-request wake lock
+            this.scrollTimeout = setTimeout(() => {
+                if (this.isActive && !this.wakeLock && this.isSupported) {
+                    // Wake lock was released, but we're still active
+                    // On iOS, we need a recent user gesture
+                    if (this.isIOS()) {
+                        if (this.hasRecentUserGesture()) {
+                            // Set pending flag - next touch will re-request
+                            this.pendingWakeLockRequest = true;
+                            console.log('⚠️ Wake Lock needs re-request - scroll detected (will request on next touch)');
+                        }
+                    } else {
+                        // On non-iOS, try to re-request immediately
+                        this.requestWakeLock().catch(() => {
+                            this.pendingWakeLockRequest = true;
+                        });
+                    }
+                }
+            }, 100); // Small delay to batch rapid scrolls
+        }, { passive: true });
+    }
 
     async requestWakeLock() {
         if (!this.isSupported || this.wakeLock) return false;
+
+        // iOS Safari requires page to be visible and focused
+        if (this.isIOS()) {
+            if (document.visibilityState !== 'visible') {
+                console.warn('Wake Lock: Page not visible (iOS requirement)');
+                return false;
+            }
+            
+            // Check if page has focus (iOS requirement)
+            if (!document.hasFocus()) {
+                console.warn('Wake Lock: Page not focused (iOS requirement)');
+                return false;
+            }
+        }
 
         try {
             this.wakeLock = await navigator.wakeLock.request('screen');
@@ -196,6 +310,12 @@ class ScreenWakeManager {
                 // Re-request if still active (requires user interaction on iOS)
                 if (this.isActive && document.visibilityState === 'visible') {
                     if (this.isIOS()) {
+                        // Also check focus
+                        if (!document.hasFocus()) {
+                            this.pendingWakeLockRequest = true;
+                            console.log('⚠️ Wake Lock released - waiting for focus (iOS)');
+                            return;
+                        }
                         this.pendingWakeLockRequest = true;
                         console.log('⚠️ Wake Lock released - will re-request on next user interaction (iOS)');
                     } else {
@@ -213,7 +333,9 @@ class ScreenWakeManager {
                 name: err.name,
                 message: err.message,
                 is_ios: this.isIOS(),
-                requires_user_interaction: err.name === 'NotAllowedError'
+                requires_user_interaction: err.name === 'NotAllowedError',
+                page_visible: document.visibilityState === 'visible',
+                page_focused: document.hasFocus()
             };
             
             console.warn('Wake Lock request failed:', errorInfo);
