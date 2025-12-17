@@ -1446,6 +1446,97 @@ function showNotification(message, type = 'info', duration = 5000) {
     return notification; // Return notification element for manual dismissal
 }
 
+// Show tip notification with X button and click-to-dismiss functionality
+function showTipNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type} tip-notification`;
+    notification.style.position = 'relative';
+    
+    // Support line breaks by replacing \n with <br> and using innerHTML
+    const formattedMessage = message.replace(/\n/g, '<br>');
+    
+    // Create X button
+    const closeButton = document.createElement('button');
+    closeButton.className = 'notification-close';
+    closeButton.innerHTML = '×';
+    closeButton.setAttribute('aria-label', 'Close notification');
+    closeButton.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: none;
+        border: none;
+        font-size: 24px;
+        line-height: 1;
+        cursor: pointer;
+        color: inherit;
+        opacity: 0.7;
+        padding: 4px 8px;
+        transition: opacity 0.2s;
+    `;
+    closeButton.addEventListener('mouseenter', () => {
+        closeButton.style.opacity = '1';
+    });
+    closeButton.addEventListener('mouseleave', () => {
+        closeButton.style.opacity = '0.7';
+    });
+    
+    // Add content
+    const content = document.createElement('div');
+    content.innerHTML = formattedMessage;
+    content.style.paddingRight = '32px'; // Space for X button
+    
+    notification.appendChild(content);
+    notification.appendChild(closeButton);
+    
+    // Store handler reference for cleanup
+    let documentClickHandler = null;
+    let isDismissed = false;
+    
+    // Dismiss function
+    const dismissNotification = () => {
+        if (isDismissed) return; // Prevent multiple dismissals
+        isDismissed = true;
+        
+        notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => {
+            notification.remove();
+            // Remove document click listener if it exists
+            if (documentClickHandler) {
+                document.removeEventListener('click', documentClickHandler, true);
+                documentClickHandler = null;
+            }
+        }, 300);
+    };
+    
+    // Handle X button click
+    closeButton.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent document click from firing
+        dismissNotification();
+    });
+    
+    // Handle document click (anywhere on page, outside notification)
+    documentClickHandler = (e) => {
+        // Don't dismiss if clicking inside the notification
+        if (!notification.contains(e.target)) {
+            dismissNotification();
+        }
+    };
+    
+    // Add document click listener (use capture phase to catch early)
+    // Small delay to prevent immediate dismissal on page load
+    setTimeout(() => {
+        if (!isDismissed) {
+            document.addEventListener('click', documentClickHandler, true);
+        }
+    }, 100);
+    
+    elements.notifications.appendChild(notification);
+    
+    return notification;
+}
+
 function resetConnection() {
     if (connections.size > 0) {
         connections.forEach((conn, peerId) => {
@@ -1734,10 +1825,9 @@ function init() {
     
     // Show wake lock tip once per tab on first navigation (not on refresh)
     if (shouldShowTipInTab('wake_lock_tip')) {
-        showNotification(
-            '💡 Tip:\n\n Tap anywhere once or interact with the page to enable Wake Mode.\nThis keeps the device awake, prevents disconnections, and ensures seamless file transfers.',
-            'info',
-            5000 // 5 seconds duration
+        showTipNotification(
+            '💡\nTap anywhere once or interact with the page to enable Wake Mode.\nThis keeps the device awake, prevents disconnections, and ensures seamless file transfers.',
+            'info'
         );
     }
             // Peer ID editing is handled by event delegation in init() function
