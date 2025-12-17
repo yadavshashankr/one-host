@@ -135,6 +135,9 @@ const elements = {
 // Initialize screen wake manager (class loaded from js/services/screenWake.js)
 const screenWake = new ScreenWakeManager();
 
+// Initialize device manager (class loaded from js/services/deviceManager.js)
+const deviceManager = new DeviceManager();
+
 // State
 let peer = null;
 let connections = new Map(); // Map to store multiple connections
@@ -339,6 +342,36 @@ function generateQRCode(peerId) {
         });
     } catch (error) {
         console.error('QR Code Generation Error:', error);
+    }
+}
+
+// Check if QR code is present and valid
+function isQRCodePresent() {
+    if (!elements.qrcode) return false;
+    // Check if QR code element has children (canvas or img created by QRCode library)
+    return elements.qrcode.children.length > 0;
+}
+
+// Ensure QR code is displayed - regenerates if missing
+function ensureQRCodeDisplayed() {
+    try {
+        // Get current peer ID from peer object or DOM element
+        const peerId = peer?.id || elements.peerId?.textContent;
+        
+        // Validate peer ID exists and is not in generating state
+        if (peerId && peerId !== 'Generating...' && peerId.trim() !== '') {
+            // Check if QR code is missing
+            if (!isQRCodePresent()) {
+                console.log('🔄 QR code missing, regenerating for peer ID:', peerId);
+                generateQRCode(peerId);
+            } else {
+                console.debug('✅ QR code already present');
+            }
+        } else {
+            console.debug('⚠️ Cannot regenerate QR code: peer ID not available');
+        }
+    } catch (error) {
+        console.error('Error ensuring QR code display:', error);
     }
 }
 
@@ -1824,9 +1857,10 @@ function init() {
     initConnectionKeepAlive(); // Initialize connection keep-alive system
     
     // Show wake lock tip once per tab on first navigation (not on refresh)
-    if (shouldShowTipInTab('wake_lock_tip')) {
+    // Only show on mobile devices and tablets, not on desktops/laptops
+    if (shouldShowTipInTab('wake_lock_tip') && deviceManager.isMobileOrTablet()) {
         showTipNotification(
-            '💡\nTap anywhere once or interact with the page to enable Wake Mode.\nThis keeps the device awake, prevents disconnections, and ensures seamless file transfers.',
+            '💡\nTap anywhere once or interact with the page to enable Wake Mode.\nThis keeps the screen awake, prevents disconnections, and ensures seamless file transfers.',
             'info'
         );
     }
@@ -2344,9 +2378,15 @@ function handleVisibilityChange() {
     
     if (isPageVisible) {
         console.log('📱 Page became visible, performing gentle connection check...');
+        
+        // Ensure QR code is displayed immediately
+        ensureQRCodeDisplayed();
+        
         // Don't immediately check connections - give them time to stabilize
         setTimeout(() => {
             checkConnections();
+            // Double-check QR code after connections stabilize
+            ensureQRCodeDisplayed();
                     // Peer ID editing is handled by event delegation
         }, 1000); // Wait 1 second for connections to stabilize
     } else {
@@ -2358,9 +2398,15 @@ function handleVisibilityChange() {
 // Handle page focus with improved mobile handling
 function handlePageFocus() {
     console.log('📱 Page focused, performing gentle connection check...');
+    
+    // Ensure QR code is displayed immediately
+    ensureQRCodeDisplayed();
+    
     // Don't immediately check connections - give them time to stabilize
     setTimeout(() => {
         checkConnections();
+        // Double-check QR code after connections stabilize
+        ensureQRCodeDisplayed();
     }, 1500); // Wait 1.5 seconds for connections to stabilize
 }
 
