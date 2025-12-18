@@ -328,8 +328,25 @@ function generateQRCode(peerId) {
         if (!elements.qrcode) return;
         elements.qrcode.innerHTML = ''; // Clear previous QR code
         
-        // Generate URL with peer ID as query parameter
-        const baseUrl = window.CONFIG?.BASE_URL || (window.location.origin + window.location.pathname);
+        // Get base URL from CONFIG, respecting current environment
+        let baseUrl = window.CONFIG?.BASE_URL;
+        
+        // Fallback: try to get from ENVIRONMENT_URLS if CONFIG is not available
+        if (!baseUrl && window.CONFIG?.ENVIRONMENT) {
+            const ENVIRONMENT_URLS = {
+                production: 'https://one-host.app/',
+                development: 'https://yadavshashankr.github.io/one-host-develop/',
+                pro: 'https://yadavshashankr.github.io/one-host-pro/'
+            };
+            baseUrl = ENVIRONMENT_URLS[window.CONFIG.ENVIRONMENT];
+        }
+        
+        // Last resort fallback: use current page URL (for development/testing)
+        if (!baseUrl) {
+            console.warn('CONFIG.BASE_URL is not defined, using current page URL as fallback');
+            baseUrl = window.location.origin + window.location.pathname;
+        }
+        
         const qrUrl = `${baseUrl}?peer=${peerId}`;
         
         new QRCode(elements.qrcode, {
@@ -420,14 +437,36 @@ function initShareButton() {
 async function shareId() {
     try {
         const peerId = elements.peerId.textContent;
-        const baseUrl = window.CONFIG?.BASE_URL || 'https://one-host.app/';
+        
+        // Get base URL from CONFIG, respecting current environment
+        let baseUrl = window.CONFIG?.BASE_URL;
+        
+        // Fallback: try to get from ENVIRONMENT_URLS if CONFIG is not available
+        if (!baseUrl && window.CONFIG?.ENVIRONMENT) {
+            const ENVIRONMENT_URLS = {
+                production: 'https://one-host.app/',
+                development: 'https://yadavshashankr.github.io/one-host-develop/',
+                pro: 'https://yadavshashankr.github.io/one-host-pro/'
+            };
+            baseUrl = ENVIRONMENT_URLS[window.CONFIG.ENVIRONMENT];
+        }
+        
+        // Last resort fallback (should not happen if constants.js is loaded correctly)
+        if (!baseUrl) {
+            console.error('CONFIG.BASE_URL is not defined, cannot generate share URL');
+            showNotification('Configuration error: Cannot generate share URL', 'error');
+            return;
+        }
+        
         const qrUrl = `${baseUrl}?peer=${peerId}`;
         
         // Track share button click
         Analytics.track('peer_id_share_clicked', {
             peer_id_length: peerId.length,
             device_type: Analytics.getDeviceType(),
-            share_method: 'web_share_api'
+            share_method: 'web_share_api',
+            base_url: baseUrl,
+            environment: window.CONFIG?.ENVIRONMENT || 'unknown'
         });
         
         await navigator.share({ url: qrUrl });
@@ -437,7 +476,9 @@ async function shareId() {
         Analytics.track('peer_id_shared_successfully', {
             peer_id_length: peerId.length,
             device_type: Analytics.getDeviceType(),
-            share_method: 'web_share_api'
+            share_method: 'web_share_api',
+            base_url: baseUrl,
+            environment: window.CONFIG?.ENVIRONMENT || 'unknown'
         });
     } catch (error) {
         if (error.name !== 'AbortError') {
