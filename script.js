@@ -34,7 +34,23 @@ const Analytics = {
     // Get or create session ID
     getSessionId: function() {
         if (!this._sessionId) {
-            this._sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            // Use cryptographically secure random number generator
+            let randomString = '';
+            if (window.crypto && window.crypto.getRandomValues) {
+                // Generate 9 random bytes and convert to base36
+                const randomBytes = new Uint8Array(9);
+                window.crypto.getRandomValues(randomBytes);
+                // Convert each byte to base36 and join
+                randomString = Array.from(randomBytes)
+                    .map(byte => byte.toString(36))
+                    .join('')
+                    .substring(0, 9);
+            } else {
+                // Fallback for very old browsers (shouldn't happen in modern browsers)
+                console.warn('crypto.getRandomValues not available, using Math.random (insecure)');
+                randomString = Math.random().toString(36).substr(2, 9);
+            }
+            this._sessionId = 'session_' + Date.now() + '_' + randomString;
         }
         return this._sessionId;
     },
@@ -111,8 +127,16 @@ const elements = {
     cancelEditButton: document.getElementById('cancel-edit'),
     // Social media elements
     socialToggle: document.getElementById('social-toggle'),
-    socialIcons: document.getElementById('social-icons')
+    socialIcons: document.getElementById('social-icons'),
+    // Auto mode toggle
+    autoModeSwitch: document.getElementById('auto-mode-switch')
 };
+
+// Initialize screen wake manager (class loaded from js/services/screenWake.js)
+const screenWake = new ScreenWakeManager();
+
+// Initialize device manager (class loaded from js/services/deviceManager.js)
+const deviceManager = new DeviceManager();
 
 // State
 let peer = null;
@@ -124,6 +148,10 @@ let fileChunks = {}; // Initialize fileChunks object
 let keepAliveInterval = null;
 let connectionTimeouts = new Map();
 let isPageVisible = true;
+let autoModeEnabled = false; // Track auto mode state
+let autoModeConnectedAsPeer = false; // Track if connected to auto mode peer (not hosting)
+let autoModePeerId = null; // Store the auto mode peer ID we're connected to
+let autoModeNotification = null; // Store reference to auto mode notification for dismissal
 
 // Add file history tracking with Sets for uniqueness
 const fileHistory = {
@@ -133,6 +161,9 @@ const fileHistory = {
 
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
+
+// Track all blob URLs for cleanup
+const activeBlobURLs = new Set(); // Set to track all created blob URLs
 
 // Add recent peers tracking
 let recentPeers = [];
@@ -314,6 +345,36 @@ function generateQRCode(peerId) {
     }
 }
 
+// Check if QR code is present and valid
+function isQRCodePresent() {
+    if (!elements.qrcode) return false;
+    // Check if QR code element has children (canvas or img created by QRCode library)
+    return elements.qrcode.children.length > 0;
+}
+
+// Ensure QR code is displayed - regenerates if missing
+function ensureQRCodeDisplayed() {
+    try {
+        // Get current peer ID from peer object or DOM element
+        const peerId = peer?.id || elements.peerId?.textContent;
+        
+        // Validate peer ID exists and is not in generating state
+        if (peerId && peerId !== 'Generating...' && peerId.trim() !== '') {
+            // Check if QR code is missing
+            if (!isQRCodePresent()) {
+                console.log('🔄 QR code missing, regenerating for peer ID:', peerId);
+                generateQRCode(peerId);
+            } else {
+                console.debug('✅ QR code already present');
+            }
+        } else {
+            console.debug('⚠️ Cannot regenerate QR code: peer ID not available');
+        }
+    } catch (error) {
+        console.error('Error ensuring QR code display:', error);
+    }
+}
+
 // Check URL for peer ID on load
 function checkUrlForPeerId() {
     try {
@@ -421,12 +482,21 @@ function setupPeerHandlers() {
         generateQRCode(id);
         initShareButton();
         updateEditButtonState();
+        
+        // Retrieve private IP and update auto mode button visibility after peer ID is generated
+        // This ensures DOM is ready and peer is initialized
+        console.log('🌐 Retrieving private IP to determine connection type...');
+        updateAutoModeButtonVisibility();
     });
 
     peer.on('connection', (conn) => {
         console.log('Incoming connection from:', conn.peer);
         connections.set(conn.peer, conn);
         updateConnectionStatus('connecting', 'Incoming connection...');
+        
+        // Activate screen wake when incoming connection is detected
+        screenWake.activateFromConnection();
+        
         setupConnectionHandlers(conn);
     });
 
@@ -521,6 +591,31 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         isConnectionReady = true;
         updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
         elements.fileTransferSection.classList.remove('hidden');
+        
+        // Activate screen wake when connection is established
+        screenWake.activateFromConnection();
+        
+        // Dismiss auto mode notification when a peer connects while auto mode is enabled
+        // This indicates an auto mode connection was successful
+        if (autoModeEnabled && autoModeNotification) {
+            console.log('✅ Peer connected while auto mode is enabled, dismissing notification');
+            autoModeNotification.remove();
+            autoModeNotification = null;
+        }
+        
+        // Scroll to file transfer section on first connection
+        if (connections.size === 1 && elements.fileTransferSection) {
+            // Use setTimeout to ensure DOM has updated and section is visible
+            setTimeout(() => {
+                elements.fileTransferSection.scrollIntoView({ 
+                    behavior: 'smooth', 
+                    block: 'start',
+                    inline: 'nearest'
+                });
+                console.log('✅ Scrolled to file transfer section');
+            }, 100);
+        }
+        
         addRecentPeer(conn.peer);
         
         // Track successful connection
@@ -598,6 +693,9 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                         connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
                     // No notification - status change will inform the user
                     break;
+                case MESSAGE_TYPES.FORCE_DISABLE_AUTO_MODE:
+                    await handleForceDisableAutoMode(data, conn);
+                    break;
                 case 'file-info':
                     // Handle file info without blob
                     const fileInfo = {
@@ -650,6 +748,18 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
 
     conn.on('close', () => {
         console.log('Connection closed with:', conn.peer);
+        
+        // Check if this was the auto mode peer connection
+        if (autoModeConnectedAsPeer && conn.peer === autoModePeerId) {
+            console.log('🔄 Auto mode peer disconnected, resetting peer mode state');
+            autoModeConnectedAsPeer = false;
+            autoModePeerId = null;
+            if (elements.autoModeSwitch) {
+                elements.autoModeSwitch.checked = false;
+                elements.autoModeSwitch.classList.remove('auto-mode-peer');
+            }
+        }
+        
         connections.delete(conn.peer);
         
         // Clear timeout for this connection
@@ -660,6 +770,10 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         
         updateConnectionStatus(connections.size > 0 ? 'connected' : '', 
             connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
+        
+        // Update screen wake state based on remaining connections
+        screenWake.updateConnectionState(connections.size);
+        
         if (connections.size === 0) {
             // No notification - status change will inform the user
         } else {
@@ -696,6 +810,17 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
     conn.on('close', () => {
         console.log('Connection closed with:', conn.peer);
         
+        // Check if this was the auto mode peer connection
+        if (autoModeConnectedAsPeer && conn.peer === autoModePeerId) {
+            console.log('🔄 Auto mode peer disconnected, resetting peer mode state');
+            autoModeConnectedAsPeer = false;
+            autoModePeerId = null;
+            if (elements.autoModeSwitch) {
+                elements.autoModeSwitch.checked = false;
+                elements.autoModeSwitch.classList.remove('auto-mode-peer');
+            }
+        }
+        
         // Clear connection timeout if provided
         if (connectionTimeout) {
             clearTimeout(connectionTimeout);
@@ -718,6 +843,49 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
 // Helper function to generate unique file ID
 function generateFileId(file) {
     return `${file.name}-${file.size}`;
+}
+
+// Handle force disable auto mode command from peer
+async function handleForceDisableAutoMode(data, conn) {
+    console.log(`🔴 Received force disable auto mode command from peer: ${conn.peer}`);
+    
+    try {
+        // Force disable auto mode regardless of state or connections
+        let disabled = false;
+        const wasHosting = autoModeEnabled;
+        const wasConnectedAsPeer = autoModeConnectedAsPeer;
+        
+        // If hosting auto mode, disable it
+        if (autoModeEnabled) {
+            console.log('🔄 Force disabling auto mode (hosting mode)');
+            await switchFromAutoMode();
+            disabled = true;
+        }
+        
+        // If connected as peer to auto mode, disconnect
+        if (autoModeConnectedAsPeer) {
+            console.log('🔄 Force disconnecting from auto mode peer');
+            await switchFromPeerMode();
+            disabled = true;
+        }
+        
+        if (disabled) {
+            showNotification('Auto mode force disabled by peer request', 'info');
+            
+            // Track analytics
+            Analytics.track('auto_mode_force_disabled_by_peer', {
+                device_type: Analytics.getDeviceType(),
+                sender_id: data.senderId || conn.peer,
+                was_hosting: wasHosting,
+                was_connected_as_peer: wasConnectedAsPeer
+            });
+        } else {
+            console.log('⚠️ Auto mode not active, nothing to disable');
+        }
+    } catch (error) {
+        console.error('❌ Error force disabling auto mode:', error);
+        showNotification('Failed to disable auto mode', 'error');
+    }
 }
 
 // Handle file header
@@ -783,6 +951,7 @@ async function handleFileComplete(data) {
                     
                     // Store the blob URL for opening the file
                     const blobUrl = URL.createObjectURL(blob);
+                    activeBlobURLs.add(blobUrl); // Track for cleanup
                     downloadButton.onclick = () => {
                         window.open(blobUrl, '_blank');
                     };
@@ -1283,16 +1452,114 @@ function formatFileSize(bytes) {
     return `<span translate="no">${size.toFixed(1)} ${units[unitIndex]}</span>`;
 }
 
-function showNotification(message, type = 'info') {
+function showNotification(message, type = 'info', duration = 5000) {
     const notification = document.createElement('div');
     notification.className = `notification ${type}`;
-    notification.textContent = message.charAt(0).toUpperCase() + message.slice(1);  // Ensure sentence case
+    // Support line breaks by replacing \n with <br> and using innerHTML
+    const formattedMessage = message.charAt(0).toUpperCase() + message.slice(1).replace(/\n/g, '<br>');
+    notification.innerHTML = formattedMessage;
     
     elements.notifications.appendChild(notification);
     
+    // Only auto-remove if duration is greater than 0
+    if (duration > 0) {
+        setTimeout(() => {
+            notification.remove();
+        }, duration);
+    }
+    
+    return notification; // Return notification element for manual dismissal
+}
+
+// Show tip notification with X button and click-to-dismiss functionality
+function showTipNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type} tip-notification`;
+    notification.style.position = 'relative';
+    
+    // Support line breaks by replacing \n with <br> and using innerHTML
+    const formattedMessage = message.replace(/\n/g, '<br>');
+    
+    // Create X button
+    const closeButton = document.createElement('button');
+    closeButton.className = 'notification-close';
+    closeButton.innerHTML = '×';
+    closeButton.setAttribute('aria-label', 'Close notification');
+    closeButton.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: none;
+        border: none;
+        font-size: 24px;
+        line-height: 1;
+        cursor: pointer;
+        color: inherit;
+        opacity: 0.7;
+        padding: 4px 8px;
+        transition: opacity 0.2s;
+    `;
+    closeButton.addEventListener('mouseenter', () => {
+        closeButton.style.opacity = '1';
+    });
+    closeButton.addEventListener('mouseleave', () => {
+        closeButton.style.opacity = '0.7';
+    });
+    
+    // Add content
+    const content = document.createElement('div');
+    content.innerHTML = formattedMessage;
+    content.style.paddingRight = '32px'; // Space for X button
+    
+    notification.appendChild(content);
+    notification.appendChild(closeButton);
+    
+    // Store handler reference for cleanup
+    let documentClickHandler = null;
+    let isDismissed = false;
+    
+    // Dismiss function
+    const dismissNotification = () => {
+        if (isDismissed) return; // Prevent multiple dismissals
+        isDismissed = true;
+        
+        notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => {
+            notification.remove();
+            // Remove document click listener if it exists
+            if (documentClickHandler) {
+                document.removeEventListener('click', documentClickHandler, true);
+                documentClickHandler = null;
+            }
+        }, 300);
+    };
+    
+    // Handle X button click
+    closeButton.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent document click from firing
+        dismissNotification();
+    });
+    
+    // Handle document click (anywhere on page, outside notification)
+    documentClickHandler = (e) => {
+        // Don't dismiss if clicking inside the notification
+        if (!notification.contains(e.target)) {
+            dismissNotification();
+        }
+    };
+    
+    // Add document click listener (use capture phase to catch early)
+    // Small delay to prevent immediate dismissal on page load
     setTimeout(() => {
-        notification.remove();
-    }, 5000);
+        if (!isDismissed) {
+            document.addEventListener('click', documentClickHandler, true);
+        }
+    }, 100);
+    
+    elements.notifications.appendChild(notification);
+    
+    return notification;
 }
 
 function resetConnection() {
@@ -1522,6 +1789,54 @@ elements.fileInput.addEventListener('change', (e) => {
 });
 
 // Initialize the application
+// Check if tip should be shown in this tab (once per tab, not on refresh)
+function shouldShowTipInTab(tipKey = 'wake_lock_tip') {
+    try {
+        // Check if sessionStorage is available
+        if (typeof sessionStorage === 'undefined') {
+            console.warn('sessionStorage not available');
+            return false;
+        }
+        
+        // Check if tip has been shown in THIS tab session
+        const tipShown = sessionStorage.getItem(tipKey);
+        if (tipShown === 'true') {
+            return false; // Already shown in this tab
+        }
+        
+        // Get navigation type
+        let navigationType = null;
+        
+        // Try modern Performance Navigation API first
+        if (performance.getEntriesByType) {
+            const navEntries = performance.getEntriesByType('navigation');
+            if (navEntries.length > 0) {
+                navigationType = navEntries[0].type;
+            }
+        }
+        
+        // Fallback to legacy API
+        if (navigationType === null && performance.navigation) {
+            // Legacy API uses numbers: 0=navigate, 1=reload, 2=back_forward
+            const navType = performance.navigation.type;
+            navigationType = navType === 0 ? 'navigate' : 
+                           navType === 1 ? 'reload' : 
+                           navType === 2 ? 'back_forward' : null;
+        }
+        
+        // Only show on 'navigate' (first visit in tab)
+        if (navigationType === 'navigate') {
+            sessionStorage.setItem(tipKey, 'true');
+            return true;
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('Error checking tip visibility:', error);
+        return false; // Fail silently
+    }
+}
+
 function init() {
     if (!checkBrowserSupport()) {
         return;
@@ -1532,8 +1847,22 @@ function init() {
     loadRecentPeers();
     checkUrlForPeerId(); // Check URL for peer ID on load
     initConnectionKeepAlive(); // Initialize connection keep-alive system
+    
+    // Show wake lock tip once per tab on first navigation (not on refresh)
+    // Only show on mobile devices and tablets, not on desktops/laptops
+    if (shouldShowTipInTab('wake_lock_tip') && deviceManager.isMobileOrTablet()) {
+        showTipNotification(
+            '💡\nTap anywhere once or interact with the page to enable Wake Mode.\nThis keeps the screen awake, prevents disconnections, and ensures seamless file transfers.',
+            'info'
+        );
+    }
             // Peer ID editing is handled by event delegation in init() function
     initSocialMediaToggle(); // Initialize social media toggle
+    initAutoModeToggle(); // Initialize auto mode toggle
+    initAutoModeLongPress(); // Initialize long press detection on "Auto" text
+    // Note: updateAutoModeButtonVisibility() will be called after peer ID is generated
+    // in the peer.on('open') handler to ensure DOM is ready
+    
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
     
     // Add event delegation for peer ID editing to handle translation interference
@@ -1555,6 +1884,180 @@ function init() {
             cancelEditingPeerId();
         }
     });
+}
+
+// Initialize auto mode toggle
+function initAutoModeToggle() {
+    if (!elements.autoModeSwitch) {
+        console.warn('Auto mode switch element not found');
+        return;
+    }
+    
+    // Ensure toggle starts as OFF (default state)
+    elements.autoModeSwitch.checked = false;
+    autoModeEnabled = false;
+    
+    // Hide auto mode button initially until WiFi/Cellular decision is made
+    const autoModeContainer = elements.autoModeSwitch.closest('.auto-mode-toggle-container');
+    if (autoModeContainer) {
+        autoModeContainer.style.display = 'none';
+        console.log('🔒 Auto mode button hidden initially (waiting for connection type detection)');
+    }
+    
+    // Add change event listener
+    elements.autoModeSwitch.addEventListener('change', handleAutoModeToggle);
+    
+    // Initialize toggle state based on current connections
+    updateAutoModeToggleState();
+    
+    console.log('Auto mode toggle initialized');
+}
+
+// Initialize long press detection on "Auto" text
+function initAutoModeLongPress() {
+    const autoLabel = document.querySelector('.toggle-label');
+    if (!autoLabel) {
+        console.error('Auto label element not found');
+        return;
+    }
+    
+    let longPressTimer = null;
+    let isLongPressing = false;
+    const LONG_PRESS_DURATION = 5000; // 5 seconds
+    
+    // Visual feedback during long press
+    function showLongPressFeedback() {
+        autoLabel.style.opacity = '0.5';
+        autoLabel.style.transform = 'scale(0.95)';
+    }
+    
+    function resetLongPressFeedback() {
+        autoLabel.style.opacity = '';
+        autoLabel.style.transform = '';
+    }
+    
+    // Mouse events (desktop)
+    autoLabel.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // Prevent text selection
+        isLongPressing = true;
+        showLongPressFeedback();
+        
+        longPressTimer = setTimeout(() => {
+            if (isLongPressing) {
+                handleLongPress();
+                isLongPressing = false;
+            }
+        }, LONG_PRESS_DURATION);
+    });
+    
+    autoLabel.addEventListener('mouseup', () => {
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    autoLabel.addEventListener('mouseleave', () => {
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    // Touch events (mobile)
+    autoLabel.addEventListener('touchstart', (e) => {
+        e.preventDefault(); // Prevent default touch behavior
+        isLongPressing = true;
+        showLongPressFeedback();
+        
+        longPressTimer = setTimeout(() => {
+            if (isLongPressing) {
+                handleLongPress();
+                isLongPressing = false;
+            }
+        }, LONG_PRESS_DURATION);
+    });
+    
+    autoLabel.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    autoLabel.addEventListener('touchcancel', (e) => {
+        e.preventDefault();
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        isLongPressing = false;
+        resetLongPressFeedback();
+    });
+    
+    // Prevent context menu on long press
+    autoLabel.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+    });
+    
+    // Prevent clicking on "Auto" text from toggling the switch
+    autoLabel.addEventListener('click', (e) => {
+        e.preventDefault(); // Prevent default label behavior
+        e.stopPropagation(); // Stop event from bubbling to label
+        console.log('🖱️ Click on "Auto" text prevented - use switch to toggle');
+    });
+    
+    // Handle the long press action
+    function handleLongPress() {
+        if (connections.size === 0) {
+            showNotification('No connected peers to send disable command', 'warning');
+            resetLongPressFeedback();
+            return;
+        }
+        
+        console.log('🔴 Long press detected on "Auto" - sending force disable command to all peers');
+        
+        // Send force disable message to all connected peers
+        let sentCount = 0;
+        connections.forEach((conn, peerId) => {
+            if (conn && conn.open) {
+                try {
+                    conn.send({
+                        type: MESSAGE_TYPES.FORCE_DISABLE_AUTO_MODE,
+                        timestamp: Date.now(),
+                        senderId: peer.id
+                    });
+                    sentCount++;
+                    console.log(`✅ Force disable command sent to peer: ${peerId}`);
+                } catch (error) {
+                    console.error(`❌ Failed to send force disable to peer ${peerId}:`, error);
+                }
+            }
+        });
+        
+        if (sentCount > 0) {
+            showNotification(`Force disable command sent to ${sentCount} peer(s)`, 'success');
+            
+            // Track analytics
+            Analytics.track('auto_mode_force_disable_sent', {
+                device_type: Analytics.getDeviceType(),
+                peer_count: sentCount
+            });
+        } else {
+            showNotification('Failed to send force disable command', 'error');
+        }
+        
+        resetLongPressFeedback();
+    }
+    
+    console.log('✅ Long press detection initialized on "Auto" text');
 }
 
 // Social Media Toggle Functionality
@@ -1655,13 +2158,28 @@ function updateConnectionStatus(status, message) {
     elements.statusDot.className = 'status-dot ' + (status || '');
     elements.statusText.textContent = message.charAt(0).toUpperCase() + message.slice(1);  // Ensure sentence case
     
+    // Hide file transfer section when status is "Ready to connect"
+    if (message && message.toLowerCase() === 'ready to connect') {
+        if (elements.fileTransferSection) {
+            elements.fileTransferSection.classList.add('hidden');
+            console.log('📁 File transfer section hidden (status: Ready to connect)');
+        }
+        
+        // If auto mode is enabled, check WiFi and disable/hide if not detected
+        if (autoModeEnabled) {
+            console.log('🔍 Auto mode is enabled, checking WiFi status...');
+            checkAndDisableAutoModeIfNoWiFi();
+        }
+    }
+    
     // Update title to show number of connections
     if (connections && connections.size > 0) {
         document.title = `(${connections.size}) One-Host`;
     } else {
         document.title = 'One-Host';
     }
-    updateEditButtonState(); // Add this line
+    updateEditButtonState();
+    updateAutoModeToggleState(); // Update auto mode toggle state based on connections
 }
 
 // Update files list display
@@ -1823,6 +2341,27 @@ function initConnectionKeepAlive() {
     
     // Handle beforeunload event
     window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    // Initialize screen wake manager
+    screenWake.init();
+    
+    // Activate screen wake on ANY user interaction (touch/click anywhere)
+    // This also handles scroll-initiated touches (touchstart fires when scrolling begins)
+    ['click', 'touchstart', 'mousedown'].forEach(event => {
+        document.addEventListener(event, () => {
+            screenWake.activateFromUserInteraction('touch');
+            
+            // If there's a pending request (e.g., from scroll), try to fulfill it
+            if (screenWake.pendingWakeLockRequest && screenWake.isActive) {
+                screenWake.requestWakeLock().then(success => {
+                    if (success) {
+                        screenWake.pendingWakeLockRequest = false;
+                        console.log('✅ Wake Lock re-requested after scroll + touch');
+                    }
+                });
+            }
+        }, { passive: true });
+    });
 }
 
 // Handle page visibility changes with improved mobile handling
@@ -1831,9 +2370,15 @@ function handleVisibilityChange() {
     
     if (isPageVisible) {
         console.log('📱 Page became visible, performing gentle connection check...');
+        
+        // Ensure QR code is displayed immediately
+        ensureQRCodeDisplayed();
+        
         // Don't immediately check connections - give them time to stabilize
         setTimeout(() => {
             checkConnections();
+            // Double-check QR code after connections stabilize
+            ensureQRCodeDisplayed();
                     // Peer ID editing is handled by event delegation
         }, 1000); // Wait 1 second for connections to stabilize
     } else {
@@ -1845,9 +2390,15 @@ function handleVisibilityChange() {
 // Handle page focus with improved mobile handling
 function handlePageFocus() {
     console.log('📱 Page focused, performing gentle connection check...');
+    
+    // Ensure QR code is displayed immediately
+    ensureQRCodeDisplayed();
+    
     // Don't immediately check connections - give them time to stabilize
     setTimeout(() => {
         checkConnections();
+        // Double-check QR code after connections stabilize
+        ensureQRCodeDisplayed();
     }, 1500); // Wait 1.5 seconds for connections to stabilize
 }
 
@@ -1862,6 +2413,28 @@ function handleBeforeUnload(event) {
     if (connections.size > 0) {
         sendDisconnectNotification();
     }
+    
+    // Stop screen wake on page unload
+    screenWake.stop();
+    
+    // Cleanup all blob URLs to prevent memory leaks
+    console.log(`🧹 Cleaning up ${activeBlobURLs.size} blob URL(s) before page unload...`);
+    activeBlobURLs.forEach(url => {
+        try {
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            console.warn('Error revoking blob URL:', e);
+        }
+    });
+    activeBlobURLs.clear();
+    
+    // Clear sent file blobs to free memory
+    console.log(`🧹 Clearing ${sentFileBlobs.size} sent file blob(s)...`);
+    sentFileBlobs.clear();
+    
+    // Clear file chunks
+    console.log(`🧹 Clearing file chunks...`);
+    fileChunks = {};
 }
 
 // Send keep-alive messages to all connected peers
@@ -2007,6 +2580,7 @@ function reconnectToPeer(peerId) {
 // Function to download a blob
 function downloadBlob(blob, fileName, fileId) {
     const url = URL.createObjectURL(blob);
+    activeBlobURLs.add(url); // Track for cleanup
     const a = document.createElement('a');
     a.href = url;
     a.download = fileName;
@@ -2035,6 +2609,7 @@ function downloadBlob(blob, fileName, fileId) {
                 
                 // Store the blob URL for opening the file
                 const openUrl = URL.createObjectURL(blob);
+                activeBlobURLs.add(openUrl); // Track for cleanup
                 downloadButton.onclick = () => {
                     // Track file open click
                     Analytics.track('file_open_clicked', {
@@ -2049,7 +2624,10 @@ function downloadBlob(blob, fileName, fileId) {
     }
 
     // Cleanup the download URL
-    setTimeout(() => URL.revokeObjectURL(url), 100);
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+        activeBlobURLs.delete(url); // Remove from tracking
+    }, 100);
 }
 
 // Function to handle simultaneous download request
@@ -2173,14 +2751,20 @@ function isEditingAllowed() {
         !statusText.includes('Failed')
     );
     
+    // Cannot edit if auto mode is enabled
+    if (autoModeEnabled) {
+        return false;
+    }
+    
     console.log('🔍 isEditingAllowed check:', {
         statusText: statusText,
         hasConnections: hasConnections,
         isReadyStatus: isReadyStatus,
-        result: isReadyStatus && !hasConnections
+        autoModeEnabled: autoModeEnabled,
+        result: isReadyStatus && !hasConnections && !autoModeEnabled
     });
     
-    return isReadyStatus && !hasConnections;
+    return isReadyStatus && !hasConnections && !autoModeEnabled;
 }
 
 // Update edit button state based on connection status
@@ -2188,7 +2772,1421 @@ function updateEditButtonState() {
     if (elements.editIdButton) {
         const canEdit = isEditingAllowed();
         elements.editIdButton.disabled = !canEdit;
-        elements.editIdButton.title = canEdit ? 'Edit ID' : 'Cannot edit ID while connected';
+        if (autoModeEnabled) {
+            elements.editIdButton.title = 'Cannot edit ID in auto mode';
+        } else {
+            elements.editIdButton.title = canEdit ? 'Edit ID' : 'Cannot edit ID while connected';
+        }
+    }
+}
+
+// Update auto mode toggle state based on connections
+function updateAutoModeToggleState() {
+    if (elements.autoModeSwitch) {
+        const hasConnections = connections.size > 0;
+        // Don't disable if in peer mode (user should be able to toggle off)
+        if (autoModeConnectedAsPeer) {
+            elements.autoModeSwitch.disabled = false;
+        } else {
+            elements.autoModeSwitch.disabled = hasConnections;
+        }
+    }
+}
+
+// Auto-connect to a peer when auto mode peer ID is taken
+function autoConnectToPeer(peerId) {
+    console.log('🔗 Auto-connecting to peer:', peerId);
+    
+    // Check if already connected to this peer
+    if (connections.has(peerId)) {
+        console.log('Already connected to peer:', peerId);
+        showNotification('Already connected to this peer', 'info');
+        return;
+    }
+    
+    // Check if peer is ready
+    if (!peer || !peer.id) {
+        console.warn('Peer not ready yet, waiting...');
+        // Wait a bit and try again
+        setTimeout(() => autoConnectToPeer(peerId), 1000);
+        return;
+    }
+    
+    // Set peer mode state
+    autoModeConnectedAsPeer = true;
+    autoModePeerId = peerId;
+    
+    // Update switch to ON and add peer mode styling (if not already set)
+    // Note: Switch may already be ON and have orange class from error handler
+    if (elements.autoModeSwitch) {
+        elements.autoModeSwitch.checked = true; // Ensure switch is ON
+        elements.autoModeSwitch.disabled = false; // Keep enabled so user can toggle off
+        elements.autoModeSwitch.classList.add('auto-mode-peer'); // Add orange class if not already present
+        console.log('✅ Switch set to peer mode (orange)');
+    }
+    
+    // Fill input field
+    if (elements.remotePeerId) {
+        elements.remotePeerId.value = peerId;
+        console.log('✅ Auto-filled peer ID:', peerId);
+    }
+    
+    // Show notification
+    showNotification(`Auto mode detected. Connecting...`, 'info');
+    
+    // Wait a moment for UI to update, then trigger connection
+    setTimeout(() => {
+        // Check again if already connected (user might have manually connected)
+        if (connections.has(peerId)) {
+            console.log('Already connected (manual connection detected)');
+            return;
+        }
+        
+        // Trigger connect button click
+        if (elements.connectButton) {
+            console.log('🔄 Triggering connection to:', peerId);
+            elements.connectButton.click();
+        } else {
+            console.error('Connect button not found');
+        }
+    }, 500);
+}
+
+// Helper function to check if IP is public (not private)
+function isPublicIP(ip) {
+    if (!ip || typeof ip !== 'string') return false;
+    
+    // Private IP ranges
+    if (ip.startsWith('192.168.')) return false;
+    if (ip.startsWith('10.')) return false;
+    if (ip.startsWith('172.')) {
+        const secondOctet = parseInt(ip.split('.')[1]);
+        if (secondOctet >= 16 && secondOctet <= 31) return false;
+    }
+    if (ip.startsWith('127.')) return false; // Loopback
+    if (ip === '0.0.0.0') return false;
+    
+    // IPv4 format validation
+    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipv4Regex.test(ip)) return false;
+    
+    // Check each octet is 0-255
+    const octets = ip.split('.');
+    for (const octet of octets) {
+        const num = parseInt(octet);
+        if (num < 0 || num > 255) return false;
+    }
+    
+    return true; // It's a public IP
+}
+
+// Get public IP address using STUN server (ICE candidates)
+function getPublicIPViaSTUN() {
+    return new Promise((resolve, reject) => {
+        const pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        });
+        
+        const publicIPs = new Set(); // Use Set to avoid duplicates
+        const allIceCandidates = []; // Store all ICE candidate information
+        let candidateGatheringComplete = false;
+        let hasPublicIP = false;
+        
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const candidate = event.candidate.candidate;
+                const candidateType = event.candidate.type;
+                
+                // Collect all ICE candidate information
+                const candidateInfo = {
+                    type: candidateType,
+                    candidate: candidate,
+                    address: event.candidate.address || null,
+                    port: event.candidate.port || null,
+                    protocol: event.candidate.protocol || null,
+                    priority: event.candidate.priority || null,
+                    foundation: event.candidate.foundation || null,
+                    relatedAddress: event.candidate.relatedAddress || null,
+                    relatedPort: event.candidate.relatedPort || null,
+                    usernameFragment: event.candidate.usernameFragment || null
+                };
+                allIceCandidates.push(candidateInfo);
+                
+                // Check for server reflexive candidates (public IP)
+                if (candidateType === 'srflx') {
+                    // Parse the candidate string
+                    // Format examples:
+                    // "candidate:1 1 UDP 2130706431 203.0.113.1 54400 typ srflx raddr 192.168.1.1 rport 54400"
+                    // The public IP is typically the 5th field (index 4)
+                    const parts = candidate.split(' ');
+                    if (parts.length >= 5) {
+                        const ip = parts[4]; // 5th element (0-indexed: 4)
+                        
+                        // Validate it's a public IP
+                        if (isPublicIP(ip)) {
+                            publicIPs.add(ip);
+                            hasPublicIP = true;
+                            console.log('✅ Public IP found via STUN:', ip);
+                        }
+                    }
+                    
+                    // Also try regex fallback
+                    const ipMatch = candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                    if (ipMatch) {
+                        const ip = ipMatch[1];
+                        if (isPublicIP(ip)) {
+                            publicIPs.add(ip);
+                            hasPublicIP = true;
+                        }
+                    }
+                }
+            } else {
+                // All candidates gathered
+                candidateGatheringComplete = true;
+                
+                // Track public IP analytics if available
+                if (hasPublicIP && publicIPs.size > 0) {
+                    const publicIP = Array.from(publicIPs)[0]; // Get first public IP
+                    
+                    // Track public IP analytics
+                    Analytics.track('ice_public_ip_received', {
+                        public_ip: publicIP,
+                        device_type: Analytics.getDeviceType(),
+                        total_candidates: allIceCandidates.length,
+                        srflx_candidates: allIceCandidates.filter(c => c.type === 'srflx').length
+                    });
+                    
+                    pc.close();
+                    resolve(publicIP);
+                } else {
+                    // Track analytics even if no public IP found
+                    const candidatesByType = {
+                        host: allIceCandidates.filter(c => c.type === 'host').length,
+                        srflx: allIceCandidates.filter(c => c.type === 'srflx').length,
+                        relay: allIceCandidates.filter(c => c.type === 'relay').length,
+                        other: allIceCandidates.filter(c => !['host', 'srflx', 'relay'].includes(c.type)).length
+                    };
+                    
+                    Analytics.track('ice_candidates_received', {
+                        total_candidates: allIceCandidates.length,
+                        host_candidates: candidatesByType.host,
+                        srflx_candidates: candidatesByType.srflx,
+                        relay_candidates: candidatesByType.relay,
+                        other_candidates: candidatesByType.other,
+                        has_public_ip: false,
+                        public_ip: null,
+                        has_private_ip: false,
+                        private_ip: null,
+                        has_mdns: false,
+                        has_private_ip_range: false,
+                        is_on_wifi: false,
+                        network_type: 'unknown',
+                        device_type: Analytics.getDeviceType()
+                    });
+                    
+                    pc.close();
+                    reject(new Error('No public IP found in ICE candidates'));
+                }
+            }
+        };
+        
+        // Error handling
+        pc.onicecandidateerror = (error) => {
+            console.warn('ICE candidate error:', error);
+        };
+        
+        // Create offer to trigger candidate gathering
+        try {
+            pc.createDataChannel('test');
+            pc.createOffer()
+                .then(offer => {
+                    return pc.setLocalDescription(offer);
+                })
+                .catch(error => {
+                    console.error('Error in offer/answer exchange:', error);
+                    pc.close();
+                    reject(error);
+                });
+        } catch (error) {
+            console.error('Error setting up RTCPeerConnection:', error);
+            pc.close();
+            reject(error);
+        }
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!candidateGatheringComplete) {
+                if (hasPublicIP && publicIPs.size > 0) {
+                    const publicIP = Array.from(publicIPs)[0];
+                    
+                    // Track public IP analytics on timeout
+                    Analytics.track('ice_public_ip_received', {
+                        public_ip: publicIP,
+                        device_type: Analytics.getDeviceType(),
+                        total_candidates: allIceCandidates.length,
+                        srflx_candidates: allIceCandidates.filter(c => c.type === 'srflx').length,
+                        timeout: true
+                    });
+                    
+                    pc.close();
+                    resolve(publicIP);
+                } else {
+                    // Track analytics even on timeout without public IP
+                    const candidatesByType = {
+                        host: allIceCandidates.filter(c => c.type === 'host').length,
+                        srflx: allIceCandidates.filter(c => c.type === 'srflx').length,
+                        relay: allIceCandidates.filter(c => c.type === 'relay').length,
+                        other: allIceCandidates.filter(c => !['host', 'srflx', 'relay'].includes(c.type)).length
+                    };
+                    
+                    Analytics.track('ice_candidates_received', {
+                        total_candidates: allIceCandidates.length,
+                        host_candidates: candidatesByType.host,
+                        srflx_candidates: candidatesByType.srflx,
+                        relay_candidates: candidatesByType.relay,
+                        other_candidates: candidatesByType.other,
+                        has_public_ip: false,
+                        public_ip: null,
+                        has_private_ip: false,
+                        private_ip: null,
+                        has_mdns: false,
+                        has_private_ip_range: false,
+                        is_on_wifi: false,
+                        network_type: 'unknown',
+                        device_type: Analytics.getDeviceType(),
+                        timeout: true
+                    });
+                    
+                    pc.close();
+                    reject(new Error('Timeout: No public IP found in ICE candidates'));
+                }
+            }
+        }, 5000);
+    });
+}
+
+// Helper function to check if an IP address is in private range (RFC 1918)
+// Checks for: 192.168.x.x, 10.x.x.x, and 172.16-31.x.x
+function isPrivateIP(ip) {
+    if (!ip) return false;
+    
+    // 192.168.0.0/16 (192.168.0.0 to 192.168.255.255)
+    if (ip.startsWith('192.168.')) return true;
+    
+    // 10.0.0.0/8 (10.0.0.0 to 10.255.255.255)
+    if (ip.startsWith('10.')) return true;
+    
+    // 172.16.0.0/12 (172.16.0.0 to 172.31.255.255)
+    if (ip.startsWith('172.')) {
+        const secondOctet = parseInt(ip.split('.')[1]);
+        if (secondOctet >= 16 && secondOctet <= 31) return true;
+    }
+    
+    return false;
+}
+
+// Get private IP address using WebRTC ICE candidates
+function getPrivateIPViaSTUN() {
+    return new Promise((resolve, reject) => {
+        const pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        });
+        
+        const privateIPs = new Set(); // Use Set to avoid duplicates
+        const allIceCandidates = []; // Store all ICE candidate information
+        let candidateGatheringComplete = false;
+        let hasPrivateIP = false;
+        let earlyResolved = false; // Flag to prevent multiple early resolves
+        
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const candidate = event.candidate.candidate;
+                const candidateType = event.candidate.type;
+                
+                // Collect all ICE candidate information
+                const candidateInfo = {
+                    type: candidateType,
+                    candidate: candidate,
+                    address: event.candidate.address || null,
+                    port: event.candidate.port || null,
+                    protocol: event.candidate.protocol || null,
+                    priority: event.candidate.priority || null,
+                    foundation: event.candidate.foundation || null,
+                    relatedAddress: event.candidate.relatedAddress || null,
+                    relatedPort: event.candidate.relatedPort || null,
+                    usernameFragment: event.candidate.usernameFragment || null
+                };
+                allIceCandidates.push(candidateInfo);
+                
+                // Check for host candidates (private/local IP)
+                if (candidateType === 'host') {
+                    // Parse the candidate string
+                    // Format examples:
+                    // "candidate:1 1 UDP 2130706431 192.168.1.100 54400 typ host"
+                    // The private IP is typically the 5th field (index 4)
+                    const parts = candidate.split(' ');
+                    if (parts.length >= 5) {
+                        const ip = parts[4]; // 5th element (0-indexed: 4)
+                        
+                        // Validate it's a private IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+                        if (ip && isPrivateIP(ip)) {
+                            privateIPs.add(ip);
+                            hasPrivateIP = true;
+                            console.log('✅ Private IP found via STUN:', ip);
+                            
+                            // Early WiFi detection: if we find any private IP, we can resolve immediately
+                            // This helps Android devices where candidate gathering takes longer
+                            if (!earlyResolved) {
+                                earlyResolved = true;
+                                console.log(`🚀 Early WiFi detection: ${ip} found (private IP range), resolving early for faster response`);
+                                
+                                // Track analytics for early resolution
+                                trackICECandidateAnalytics(allIceCandidates, false, true, true, privateIPs);
+                                
+                                const earlyResult = {
+                                    privateIP: ip,
+                                    allCandidates: allIceCandidates,
+                                    hasMDNS: false, // Will be checked later if needed
+                                    has192IP: true, // Keep name for backward compatibility, but now checks all private IPs
+                                    isOnWiFi: true
+                                };
+                                pc.close();
+                                resolve(earlyResult);
+                                return;
+                            }
+                        }
+                    }
+                    
+                    // Also try regex fallback
+                    const ipMatch = candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                    if (ipMatch) {
+                        const ip = ipMatch[1];
+                        if (ip && isPrivateIP(ip)) {
+                            privateIPs.add(ip);
+                            hasPrivateIP = true;
+                            
+                            // Early WiFi detection: if we find any private IP, we can resolve immediately
+                            if (!earlyResolved) {
+                                earlyResolved = true;
+                                console.log(`🚀 Early WiFi detection: ${ip} found (regex, private IP range), resolving early for faster response`);
+                                
+                                // Track analytics for early resolution
+                                trackICECandidateAnalytics(allIceCandidates, false, true, true, privateIPs);
+                                
+                                const earlyResult = {
+                                    privateIP: ip,
+                                    allCandidates: allIceCandidates,
+                                    hasMDNS: false, // Will be checked later if needed
+                                    has192IP: true, // Keep name for backward compatibility, but now checks all private IPs
+                                    isOnWiFi: true
+                                };
+                                pc.close();
+                                resolve(earlyResult);
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // All candidates gathered
+                candidateGatheringComplete = true;
+                
+                // Log all ICE candidate information
+                console.log('📊 ========== ALL ICE CANDIDATE INFORMATION ==========');
+                console.log(`📊 Total candidates received: ${allIceCandidates.length}`);
+                console.log('📊 ICE Candidates Details:', allIceCandidates);
+                
+                // Group by type for better readability
+                const candidatesByType = {};
+                allIceCandidates.forEach(c => {
+                    if (!candidatesByType[c.type]) {
+                        candidatesByType[c.type] = [];
+                    }
+                    candidatesByType[c.type].push(c);
+                });
+                
+                console.log('📊 Candidates grouped by type:', candidatesByType);
+                
+                // Summary
+                console.log('📊 Summary:');
+                Object.keys(candidatesByType).forEach(type => {
+                    console.log(`  - ${type}: ${candidatesByType[type].length} candidate(s)`);
+                    candidatesByType[type].forEach((c, idx) => {
+                        console.log(`    [${idx + 1}] Address: ${c.address || 'N/A'}, Port: ${c.port || 'N/A'}, Protocol: ${c.protocol || 'N/A'}`);
+                        if (c.candidate) {
+                            console.log(`        Full candidate: ${c.candidate.substring(0, 100)}${c.candidate.length > 100 ? '...' : ''}`);
+                        }
+                    });
+                });
+                console.log('📊 ====================================================');
+                
+                // Check if any HOST candidate indicates WiFi connection
+                // WiFi can be detected via:
+                // 1. .local (mDNS) - used by some browsers/devices
+                // 2. Private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - used by Android and others
+                // Both checks happen in parallel on host candidates only
+                const hasMDNS = allIceCandidates.some(c => {
+                    // Only check host type candidates
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field contains .local (most reliable)
+                    if (c.address && c.address.endsWith('.local')) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for .local in host candidates
+                    if (c.candidate && c.candidate.includes('.local')) {
+                        // Verify it's in a hostname pattern, not just anywhere
+                        const localMatch = c.candidate.match(/[\w-]+\.local/);
+                        if (localMatch !== null) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                });
+                
+                // Check for private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - Android WiFi detection
+                const has192IP = allIceCandidates.some(c => {
+                    // Only check host type candidates
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field is a private IP
+                    if (c.address && isPrivateIP(c.address)) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for private IP pattern
+                    if (c.candidate) {
+                        // Match any IP address in the candidate string
+                        const ipMatch = c.candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                        if (ipMatch && isPrivateIP(ipMatch[1])) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                });
+                
+                // WiFi is detected if either .local OR private IP is found
+                const isOnWiFi = hasMDNS || has192IP;
+                
+                // Track ICE candidate analytics
+                trackICECandidateAnalytics(allIceCandidates, hasMDNS, has192IP, isOnWiFi, privateIPs);
+                
+                if (hasPrivateIP && privateIPs.size > 0) {
+                    const privateIP = Array.from(privateIPs)[0]; // Get first private IP
+                    pc.close();
+                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
+                } else {
+                    pc.close();
+                    reject({ error: new Error('No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
+                }
+            }
+        };
+        
+        // Error handling
+        pc.onicecandidateerror = (error) => {
+            console.warn('ICE candidate error:', error);
+        };
+        
+        // Create offer to trigger candidate gathering
+        try {
+            pc.createDataChannel('test');
+            pc.createOffer()
+                .then(offer => {
+                    return pc.setLocalDescription(offer);
+                })
+                .catch(error => {
+                    console.error('Error in offer/answer exchange:', error);
+                    pc.close();
+                    reject(error);
+                });
+        } catch (error) {
+            console.error('Error setting up RTCPeerConnection:', error);
+            pc.close();
+            reject(error);
+        }
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!candidateGatheringComplete) {
+                // Log all candidates before timeout
+                console.log('📊 ========== ALL ICE CANDIDATE INFORMATION (TIMEOUT) ==========');
+                console.log(`📊 Total candidates received: ${allIceCandidates.length}`);
+                console.log('📊 ICE Candidates Details:', allIceCandidates);
+                
+                // Group by type for better readability
+                const candidatesByType = {};
+                allIceCandidates.forEach(c => {
+                    if (!candidatesByType[c.type]) {
+                        candidatesByType[c.type] = [];
+                    }
+                    candidatesByType[c.type].push(c);
+                });
+                
+                console.log('📊 Candidates grouped by type:', candidatesByType);
+                console.log('📊 ====================================================');
+                
+                // Check if any HOST candidate indicates WiFi connection
+                // WiFi can be detected via:
+                // 1. .local (mDNS) - used by some browsers/devices
+                // 2. Private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - used by Android and others
+                // Both checks happen in parallel on host candidates only
+                const hasMDNS = allIceCandidates.some(c => {
+                    // Only check host type candidates
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field contains .local (most reliable)
+                    if (c.address && c.address.endsWith('.local')) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for .local in host candidates
+                    if (c.candidate && c.candidate.includes('.local')) {
+                        // Verify it's in a hostname pattern, not just anywhere
+                        const localMatch = c.candidate.match(/[\w-]+\.local/);
+                        if (localMatch !== null) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                });
+                
+                // Check for private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x) - Android WiFi detection
+                const has192IP = allIceCandidates.some(c => {
+                    // Only check host type candidates
+                    if (c.type !== 'host') return false;
+                    
+                    // Check if address field is a private IP
+                    if (c.address && isPrivateIP(c.address)) {
+                        return true;
+                    }
+                    
+                    // Fallback: check candidate string for private IP pattern
+                    if (c.candidate) {
+                        // Match any IP address in the candidate string
+                        const ipMatch = c.candidate.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+                        if (ipMatch && isPrivateIP(ipMatch[1])) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                });
+                
+                // WiFi is detected if either .local OR private IP is found
+                const isOnWiFi = hasMDNS || has192IP;
+                
+                // Track analytics on timeout
+                trackICECandidateAnalytics(allIceCandidates, hasMDNS, has192IP, isOnWiFi, privateIPs);
+                
+                if (hasPrivateIP && privateIPs.size > 0) {
+                    const privateIP = Array.from(privateIPs)[0];
+                    pc.close();
+                    resolve({ privateIP, allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
+                } else {
+                    pc.close();
+                    reject({ error: new Error('Timeout: No private IP found in ICE candidates'), allCandidates: allIceCandidates, hasMDNS, has192IP, isOnWiFi });
+                }
+            }
+        }, 5000);
+    });
+}
+
+// Get private IP address and check for mDNS
+async function getPrivateIP() {
+    try {
+        console.log('🌐 Attempting to get private IP via STUN...');
+        const result = await getPrivateIPViaSTUN();
+        
+        // result can be either { privateIP, allCandidates, hasMDNS, has192IP, isOnWiFi } or just privateIP (for backward compatibility)
+        const privateIP = result.privateIP || result;
+        const allCandidates = result.allCandidates || [];
+        const hasMDNS = result.hasMDNS || false;
+        const has192IP = result.has192IP || false;
+        const isOnWiFi = result.isOnWiFi || false;
+        
+        console.log('✅ Private IP retrieved via STUN:', privateIP);
+        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? 'Private IP' : 'none');
+        console.log('📡 WiFi detected:', isOnWiFi, wifiMethod !== 'none' ? `(via ${wifiMethod})` : '');
+        return { privateIP, hasMDNS, has192IP, isOnWiFi, allCandidates };
+    } catch (error) {
+        // error can be either { error, allCandidates, hasMDNS, has192IP, isOnWiFi } or just Error object
+        const errorObj = error.error || error;
+        const allCandidates = error.allCandidates || [];
+        const hasMDNS = error.hasMDNS || false;
+        const has192IP = error.has192IP || false;
+        const isOnWiFi = error.isOnWiFi || false;
+        
+        console.warn('⚠️ Failed to retrieve private IP:', errorObj.message || errorObj);
+        const wifiMethod = hasMDNS ? 'mDNS (.local)' : (has192IP ? 'Private IP' : 'none');
+        console.log('📡 WiFi detected:', isOnWiFi, wifiMethod !== 'none' ? `(via ${wifiMethod})` : '');
+        
+        // Log ICE candidates even on error
+        if (allCandidates.length > 0) {
+            console.log('📊 ICE candidates received before error:', allCandidates.length);
+        }
+        
+        return { privateIP: null, hasMDNS, has192IP, isOnWiFi, allCandidates };
+    }
+}
+
+// Track ICE candidate analytics
+function trackICECandidateAnalytics(allCandidates, hasMDNS, has192IP, isOnWiFi, privateIPs) {
+    try {
+        // Group candidates by type
+        const candidatesByType = {
+            host: 0,
+            srflx: 0,
+            relay: 0,
+            other: 0
+        };
+        
+        let publicIP = null;
+        let privateIP = null;
+        
+        allCandidates.forEach(candidate => {
+            // Count by type
+            if (candidatesByType.hasOwnProperty(candidate.type)) {
+                candidatesByType[candidate.type]++;
+            } else {
+                candidatesByType.other++;
+            }
+            
+            // Extract public IP from srflx candidates
+            if (candidate.type === 'srflx' && candidate.address && !publicIP) {
+                if (isPublicIP(candidate.address)) {
+                    publicIP = candidate.address;
+                }
+            }
+            
+            // Extract private IP from host candidates (use first one found)
+            if (candidate.type === 'host' && candidate.address && !privateIP) {
+                if (isPrivateIP(candidate.address)) {
+                    privateIP = candidate.address;
+                }
+            }
+        });
+        
+        // If privateIPs Set is provided, use first private IP from it
+        if (privateIPs && privateIPs.size > 0 && !privateIP) {
+            privateIP = Array.from(privateIPs)[0];
+        }
+        
+        // Track comprehensive ICE candidate event
+        Analytics.track('ice_candidates_received', {
+            total_candidates: allCandidates.length,
+            host_candidates: candidatesByType.host,
+            srflx_candidates: candidatesByType.srflx,
+            relay_candidates: candidatesByType.relay,
+            other_candidates: candidatesByType.other,
+            has_public_ip: !!publicIP,
+            public_ip: publicIP || null, // Only include if available
+            has_private_ip: !!privateIP,
+            private_ip: privateIP || null, // Only include if available
+            has_mdns: hasMDNS || false,
+            has_private_ip_range: has192IP || false,
+            is_on_wifi: isOnWiFi || false,
+            network_type: (isOnWiFi || false) ? 'wifi' : 'cellular',
+            device_type: Analytics.getDeviceType()
+        });
+        
+        // Also track public IP separately if available
+        if (publicIP) {
+            Analytics.track('ice_public_ip_received', {
+                public_ip: publicIP,
+                device_type: Analytics.getDeviceType(),
+                total_candidates: allCandidates.length,
+                srflx_candidates: candidatesByType.srflx
+            });
+        }
+        
+    } catch (error) {
+        console.warn('Error tracking ICE candidate analytics:', error);
+        // Don't break functionality
+    }
+}
+
+// Check if WiFi is detected in ICE candidates (via .local mDNS or private IP)
+async function hasMDNSInICE() {
+    try {
+        const result = await getPrivateIP();
+        // Check for WiFi via either .local (mDNS) OR private IP (192.168.x.x, 10.x.x.x, or 172.16-31.x.x)
+        const isOnWiFi = result.isOnWiFi || result.hasMDNS || result.has192IP || false;
+        
+        const detectionMethod = result.hasMDNS ? 'mDNS (.local)' : (result.has192IP ? 'Private IP' : 'none');
+        console.log(`📡 WiFi check result: ${isOnWiFi ? 'Detected' : 'Not detected'}${detectionMethod !== 'none' ? ` (via ${detectionMethod})` : ''}`);
+        return isOnWiFi;
+    } catch (error) {
+        console.error('❌ Error checking for WiFi:', error);
+        return false; // Default to hide auto mode on error
+    }
+}
+
+// Check WiFi and disable/hide auto mode if not detected
+async function checkAndDisableAutoModeIfNoWiFi() {
+    try {
+        const isOnWiFi = await hasMDNSInICE();
+        
+        if (!isOnWiFi) {
+            // WiFi not detected - disable and hide auto mode
+            console.log('❌ WiFi not detected, disabling and hiding auto mode');
+            
+            // Disable auto mode
+            autoModeEnabled = false;
+            
+            // Hide and disable the switch
+            const autoModeContainer = elements.autoModeSwitch?.closest('.auto-mode-toggle-container');
+            if (autoModeContainer) {
+                autoModeContainer.style.display = 'none';
+            }
+            
+            if (elements.autoModeSwitch) {
+                elements.autoModeSwitch.checked = false;
+                elements.autoModeSwitch.disabled = true;
+                elements.autoModeSwitch.classList.remove('auto-mode-peer');
+            }
+            
+            // Dismiss any auto mode notification
+            if (autoModeNotification) {
+                autoModeNotification.remove();
+                autoModeNotification = null;
+            }
+            
+            // Reinitialize peer with normal auto-generated ID
+            console.log('🔄 Reinitializing peer with normal auto-generated ID...');
+            initPeerJS();
+        } else {
+            console.log('✅ WiFi still detected, keeping auto mode enabled');
+        }
+    } catch (error) {
+        console.error('❌ Error checking WiFi for auto mode:', error);
+        // On error, assume no WiFi and disable auto mode
+        autoModeEnabled = false;
+        const autoModeContainer = elements.autoModeSwitch?.closest('.auto-mode-toggle-container');
+        if (autoModeContainer) {
+            autoModeContainer.style.display = 'none';
+        }
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+            elements.autoModeSwitch.disabled = true;
+        }
+        
+        // Reinitialize peer with normal auto-generated ID
+        console.log('🔄 Reinitializing peer with normal auto-generated ID (error case)...');
+        initPeerJS();
+    }
+}
+
+// Update auto mode button visibility based on WiFi detection in ICE candidates
+// Shows button if WiFi is detected (via .local mDNS or private IP), hides if not found
+async function updateAutoModeButtonVisibility() {
+    // Use the existing auto mode switch element to find its container
+    if (!elements.autoModeSwitch) {
+        console.warn('Auto mode switch element not found');
+        return;
+    }
+    
+    const autoModeContainer = elements.autoModeSwitch.closest('.auto-mode-toggle-container');
+    if (!autoModeContainer) {
+        console.warn('Auto mode toggle container not found');
+        return;
+    }
+    
+    // Ensure button is hidden while processing
+    autoModeContainer.style.display = 'none';
+    
+    try {
+        // Create a 500ms timeout promise
+        const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+                resolve({ timeout: true, isOnWiFi: false });
+            }, 500);
+        });
+        
+        // Race the WiFi check against 500ms timeout
+        const checkPromise = hasMDNSInICE().then(isOnWiFi => ({ timeout: false, isOnWiFi }));
+        
+        const result = await Promise.race([checkPromise, timeoutPromise]);
+        
+        // Check if device is Android or iOS
+        const userAgent = navigator.userAgent.toLowerCase();
+        const isAndroid = /android/.test(userAgent);
+        const isIOS = /iphone|ipad|ipod/.test(userAgent);
+        const isMobileDevice = isAndroid || isIOS;
+        
+        if (result.timeout) {
+            // Took more than 500ms - assume cellular, keep switch hidden
+            console.log('⏱️ Auto mode check timed out (>500ms) - assuming cellular, keeping switch hidden');
+            autoModeContainer.style.display = 'none';
+            
+            // On Android/iOS, also disable the switch when WiFi is not detected
+            if (isMobileDevice && elements.autoModeSwitch) {
+                elements.autoModeSwitch.disabled = true;
+                console.log('🔒 Auto mode switch disabled (mobile device, WiFi not detected)');
+            }
+            
+            // Also disable auto mode if it was enabled
+            if (autoModeEnabled) {
+                console.log('🔄 Auto mode was enabled, disabling due to timeout (likely cellular)');
+                if (elements.autoModeSwitch) {
+                    elements.autoModeSwitch.checked = false;
+                }
+                autoModeEnabled = false;
+            }
+            return;
+        }
+        
+        // Check completed within 500ms
+        const isOnWiFi = result.isOnWiFi;
+        
+        if (isOnWiFi) {
+            // Show auto mode button if WiFi is detected (via .local or private IP)
+            autoModeContainer.style.display = '';
+            
+            // Enable the switch on mobile devices when WiFi is detected
+            if (isMobileDevice && elements.autoModeSwitch) {
+                elements.autoModeSwitch.disabled = false;
+                console.log('✅ Auto mode switch enabled (mobile device, WiFi detected)');
+            }
+            
+            console.log('✅ Auto mode button shown (WiFi detected in ICE candidates)');
+        } else {
+            // Hide auto mode button if WiFi is not detected
+            autoModeContainer.style.display = 'none';
+            console.log('❌ Auto mode button hidden (no WiFi detected in ICE candidates)');
+            
+            // On Android/iOS, also disable the switch when WiFi is not detected
+            if (isMobileDevice && elements.autoModeSwitch) {
+                elements.autoModeSwitch.disabled = true;
+                console.log('🔒 Auto mode switch disabled (mobile device, WiFi not detected)');
+            }
+            
+            // Also disable auto mode if it was enabled
+            if (autoModeEnabled) {
+                console.log('🔄 Auto mode was enabled, disabling due to no WiFi detected');
+                if (elements.autoModeSwitch) {
+                    elements.autoModeSwitch.checked = false;
+                }
+                autoModeEnabled = false;
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error updating auto mode button visibility:', error);
+        // Keep button hidden on error
+        autoModeContainer.style.display = 'none';
+        
+        // On Android/iOS, also disable the switch on error
+        const userAgent = navigator.userAgent.toLowerCase();
+        const isAndroid = /android/.test(userAgent);
+        const isIOS = /iphone|ipad|ipod/.test(userAgent);
+        const isMobileDevice = isAndroid || isIOS;
+        
+        if (isMobileDevice && elements.autoModeSwitch) {
+            elements.autoModeSwitch.disabled = true;
+            console.log('🔒 Auto mode switch disabled (mobile device, error during WiFi check)');
+        }
+    }
+}
+
+// Get public IP - Primary: STUN, Fallback: External API, Final: Timestamp
+async function getPublicIP() {
+    // Try STUN method first (preferred)
+    try {
+        console.log('🌐 Attempting to get public IP via STUN...');
+        const publicIP = await getPublicIPViaSTUN();
+        console.log('✅ Public IP retrieved via STUN:', publicIP);
+        return publicIP;
+    } catch (stunError) {
+        console.warn('⚠️ STUN method failed, trying external API:', stunError);
+        
+        // Fallback to external API
+        try {
+            // Use AbortController for timeout (more compatible than AbortSignal.timeout)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            const response = await fetch('https://api.ipify.org?format=json', {
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (data.ip && isPublicIP(data.ip)) {
+                console.log('✅ Public IP retrieved via API:', data.ip);
+                return data.ip;
+            }
+        } catch (apiError) {
+            console.warn('⚠️ External API also failed:', apiError);
+        }
+        
+        // Final fallback: throw error (caller will use timestamp)
+        throw new Error('All methods failed to retrieve public IP');
+    }
+}
+
+// Convert IP to peer ID format (first 8 digits)
+function formatIPForPeerID(ip) {
+    if (!ip) {
+        throw new Error('IP address is required');
+    }
+    
+    // Handle IPv4 (e.g., "103.142.11.33" -> "10314211")
+    if (ip.includes('.')) {
+        const parts = ip.split('.');
+        if (parts.length === 4) {
+            // Part 1: Include all digits
+            const part1 = parts[0];
+            
+            // Part 2: Include all digits
+            const part2 = parts[1];
+            
+            // Part 3: Take only first 2 digits (or just 1 if it's only 1 digit)
+            const part3 = parts[2].substring(0, 2);
+            
+            // Part 4: Ignored
+            
+            // Combine: part1 + part2 + part3 (first 2 digits)
+            const suffix = part1 + part2 + part3;
+            
+            return suffix; // Length can vary (no padding)
+        }
+    }
+    
+    // Handle IPv6 (e.g., "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+    // Keep current IPv6 logic
+    if (ip.includes(':')) {
+        // Remove colons and take first 8 numeric characters
+        const hex = ip.replace(/:/g, '').substring(0, 8);
+        // Extract numeric digits
+        const digits = hex.replace(/[^0-9]/g, '').substring(0, 8);
+        if (digits.length < 8) {
+            // If not enough digits, use hex characters converted to decimal
+            const hexDigits = hex.substring(0, 8).split('').map(c => {
+                const num = parseInt(c, 16);
+                return isNaN(num) ? '0' : num.toString();
+            }).join('').substring(0, 8);
+            return hexDigits.padEnd(8, '0');
+        }
+        return digits;
+    }
+    
+    // Fallback: extract first 8 numeric digits
+    const digits = ip.replace(/[^0-9]/g, '').substring(0, 8);
+    return digits.padEnd(8, '0');
+}
+
+// Switch to auto mode
+async function switchToAutoMode() {
+    console.log('🔄 Switching to auto mode...');
+    
+    // Check if currently editing - cancel edit mode first
+    const peerIdEditElement = document.getElementById('peer-id-edit');
+    if (peerIdEditElement && !peerIdEditElement.classList.contains('hidden')) {
+        cancelEditingPeerId();
+    }
+    
+    // Store attempted peer ID for error handling
+    let attemptedPeerId = null;
+    
+    try {
+        // Show loading state
+        updateConnectionStatus('connecting', 'Switching to auto mode...');
+        
+        // Fetch public IP address
+        updateConnectionStatus('connecting', 'Fetching network information...');
+        let publicIP;
+        try {
+            publicIP = await getPublicIP();
+        } catch (ipError) {
+            console.error('❌ Failed to fetch public IP:', ipError);
+            throw new Error('Failed to enable auto mode');
+        }
+        
+        // Format IP for peer ID
+        let peerIdSuffix;
+        try {
+            peerIdSuffix = formatIPForPeerID(publicIP);
+            console.log('✅ Public IP retrieved:', publicIP, '→ Suffix:', peerIdSuffix);
+        } catch (formatError) {
+            console.error('❌ Failed to format IP:', formatError);
+            throw new Error('Failed to enable auto mode');
+        }
+        
+        // Generate peer ID
+        const autoModePeerId = `automatic-mode-${peerIdSuffix}`;
+        attemptedPeerId = autoModePeerId; // Store for error handling
+        console.log('🆔 Generated auto mode peer ID:', autoModePeerId);
+        
+        // Destroy existing peer if any
+        if (peer) {
+            peer._isChangingId = true;
+            peer.destroy();
+            peer = null;
+        }
+        
+        // Clear connections
+        connections.clear();
+        
+        // Set auto mode state
+        autoModeEnabled = true;
+        
+        // Initialize new peer with dynamic ID
+        peer = new Peer(autoModePeerId, {
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        });
+        
+        setupPeerHandlers();
+        
+        // Wait for the peer to be ready
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Timeout waiting for peer to open'));
+            }, 10000);
+            
+            peer.once('open', (id) => {
+                clearTimeout(timeout);
+                resolve(id);
+            });
+            
+            peer.once('error', (err) => {
+                clearTimeout(timeout);
+                // Store the attempted peer ID in the error for later use
+                err.attemptedPeerId = autoModePeerId;
+                reject(err);
+            });
+        });
+        
+        // Update UI - peer ID should already be set in peer.on('open')
+        // But we'll ensure it's set correctly
+        const peerIdElement = document.getElementById('peer-id');
+        if (peerIdElement) {
+            peerIdElement.textContent = autoModePeerId;
+        }
+        
+        // Generate QR code
+        generateQRCode(autoModePeerId);
+        
+        // Disable edit button
+        updateEditButtonState();
+        
+        // Update toggle visual state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = true;
+        }
+        
+        // Store notification reference and show without auto-dismiss (duration = 0 means persistent)
+        autoModeNotification = showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.\n\nAuto mode works only on WiFi / Local Network.', 'success', 0);
+        
+        // Track auto mode enable
+        Analytics.track('auto_mode_enabled', {
+            device_type: Analytics.getDeviceType(),
+            public_ip: publicIP,
+            peer_id_suffix: peerIdSuffix
+        });
+        
+    } catch (error) {
+        console.error('Error switching to auto mode:', error);
+        
+        // Check if this is an "ID taken" error
+        const isIdTaken = error.type === 'unavailable-id' || 
+                         error.message.includes('is taken') || 
+                         error.message.includes('unavailable-id') ||
+                         (error.attemptedPeerId && error.type === 'unavailable-id');
+        
+        if (isIdTaken) {
+            // Get the attempted peer ID from error or stored value
+            const takenPeerId = error.attemptedPeerId || attemptedPeerId;
+            if (!takenPeerId) {
+                console.error('No peer ID found for auto-connect');
+                // Fall through to normal error handling
+            } else {
+                console.log('🔗 Auto mode peer ID taken:', takenPeerId, '- Attempting auto-connect');
+                
+                // Keep switch ON and change to orange (peer mode) immediately
+                // Don't turn off the switch - just change color to indicate peer mode
+                if (elements.autoModeSwitch) {
+                    elements.autoModeSwitch.checked = true; // Keep switch ON
+                    elements.autoModeSwitch.classList.add('auto-mode-peer'); // Change to orange
+                    console.log('✅ Switch kept ON, changed to peer mode (orange)');
+                }
+                
+                // Keep autoModeEnabled = true since we're still in auto mode (as a peer)
+                // autoModeEnabled remains true - we're transitioning to peer mode, not disabling auto mode
+                
+                // Reinitialize with auto-generated ID (we need a peer to connect from)
+                updateConnectionStatus('', 'Ready to connect');
+                initPeerJS();
+                
+                // Wait for peer to be ready, then auto-connect
+                // We'll use a flag to detect when peer is ready
+                const checkPeerReady = () => {
+                    if (peer && peer.id && !peer.destroyed) {
+                        console.log('✅ Peer ready, auto-connecting to:', takenPeerId);
+                        autoConnectToPeer(takenPeerId);
+                    } else {
+                        // Wait a bit more
+                        setTimeout(checkPeerReady, 500);
+                    }
+                };
+                
+                // Start checking after a short delay
+                setTimeout(checkPeerReady, 1000);
+                
+                // Track auto-connect attempt
+                Analytics.track('auto_mode_auto_connect', {
+                    device_type: Analytics.getDeviceType(),
+                    target_peer_id: takenPeerId,
+                    reason: 'peer_id_taken'
+                });
+                
+                return; // Don't show error, auto-connect will handle notification
+            }
+        }
+        
+        // For other errors, show normal error handling
+        autoModeEnabled = false;
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+        }
+        
+        let errorMessage = 'Failed to enable auto mode';
+        showNotification(errorMessage, 'error');
+        updateConnectionStatus('', 'Ready to connect');
+        
+        // Reinitialize with auto-generated ID
+        initPeerJS();
+    }
+}
+
+// Switch from auto mode
+async function switchFromAutoMode() {
+    console.log('🔄 Switching from auto mode...');
+    
+    try {
+        // Show loading state
+        updateConnectionStatus('connecting', 'Switching from auto mode...');
+        
+        // Destroy existing peer if any
+        if (peer) {
+            peer._isChangingId = true;
+            peer.destroy();
+            peer = null;
+        }
+        
+        // Clear connections
+        connections.clear();
+        
+        // Set auto mode state
+        autoModeEnabled = false;
+        
+        // Initialize new peer with auto-generated ID (no custom ID)
+        peer = new Peer({
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        });
+        
+        setupPeerHandlers();
+        
+        // Wait for the peer to be ready - the ID will be auto-generated
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Timeout waiting for peer to open'));
+            }, 10000);
+            
+            peer.once('open', (id) => {
+                clearTimeout(timeout);
+                resolve(id);
+            });
+            
+            peer.once('error', (err) => {
+                clearTimeout(timeout);
+                reject(err);
+            });
+        });
+        
+        // Peer ID will be set automatically in peer.on('open') handler
+        // But we'll ensure QR code is updated
+        
+        // Enable edit button
+        updateEditButtonState();
+        
+        // Update toggle visual state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+        }
+        
+        // Dismiss auto mode notification if it's still showing
+        if (autoModeNotification) {
+            console.log('✅ Auto mode disabled, dismissing notification');
+            autoModeNotification.remove();
+            autoModeNotification = null;
+        }
+        
+        showNotification('Auto mode disabled', 'success');
+        
+        // Track auto mode disable
+        Analytics.track('auto_mode_disabled', {
+            device_type: Analytics.getDeviceType()
+        });
+        
+    } catch (error) {
+        console.error('Error switching from auto mode:', error);
+        autoModeEnabled = true; // Revert state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = true;
+        }
+        
+        showNotification('Failed to disable auto mode', 'error');
+        updateConnectionStatus('', 'Ready to connect');
+    }
+}
+
+// Switch from peer mode (disconnect from auto mode peer)
+async function switchFromPeerMode() {
+    console.log('🔄 Switching off from peer mode...');
+    
+    try {
+        // Disconnect from auto mode peer
+        if (autoModePeerId && connections.has(autoModePeerId)) {
+            const conn = connections.get(autoModePeerId);
+            if (conn && conn.open) {
+                conn.close();
+            }
+            connections.delete(autoModePeerId);
+            console.log('✅ Disconnected from auto mode peer:', autoModePeerId);
+        }
+        
+        // Reset peer mode state
+        const disconnectedPeerId = autoModePeerId;
+        autoModeConnectedAsPeer = false;
+        autoModePeerId = null;
+        
+        // Destroy existing peer
+        if (peer) {
+            peer._isChangingId = true;
+            peer.destroy();
+            peer = null;
+        }
+        
+        // Clear all connections
+        connections.clear();
+        
+        // Reinitialize with auto-generated ID
+        updateConnectionStatus('connecting', 'Disconnecting from auto mode peer...');
+        initPeerJS();
+        
+        // Wait for peer to be ready
+        // peer.on('open') will handle UI updates automatically
+        
+        // Update switch state
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+            elements.autoModeSwitch.classList.remove('auto-mode-peer');
+        }
+        
+        showNotification('Disconnected from auto mode peer', 'success');
+        
+        // Track disconnect
+        Analytics.track('auto_mode_peer_disconnected', {
+            device_type: Analytics.getDeviceType(),
+            peer_id: disconnectedPeerId
+        });
+        
+    } catch (error) {
+        console.error('Error switching from peer mode:', error);
+        showNotification('Failed to disconnect from auto mode peer', 'error');
+        
+        // Reset state even on error
+        autoModeConnectedAsPeer = false;
+        autoModePeerId = null;
+        if (elements.autoModeSwitch) {
+            elements.autoModeSwitch.checked = false;
+            elements.autoModeSwitch.classList.remove('auto-mode-peer');
+        }
+    }
+}
+
+// Handle auto mode toggle
+async function handleAutoModeToggle() {
+    const switchElement = elements.autoModeSwitch;
+    if (!switchElement) {
+        console.error('Auto mode switch element not found');
+        return;
+    }
+    
+    // Check if toggle is disabled (has other connections, not peer mode)
+    if (switchElement.disabled) {
+        showNotification('Cannot change auto mode while connected to peers', 'warning');
+        // Revert toggle state
+        switchElement.checked = !switchElement.checked;
+        return;
+    }
+    
+    const shouldEnable = switchElement.checked;
+    
+    // Check if currently in peer mode and user wants to turn off
+    if (autoModeConnectedAsPeer && !shouldEnable) {
+        console.log('🔄 User toggling off from peer mode');
+        await switchFromPeerMode();
+        return;
+    }
+    
+    if (shouldEnable) {
+        // Check if connections exist
+        if (connections.size > 0) {
+            showNotification('Cannot enable auto mode while connected to peers', 'warning');
+            switchElement.checked = false;
+            return;
+        }
+        
+        // Check if WiFi is detected before enabling auto mode
+        try {
+            const isOnWiFi = await hasMDNSInICE();
+            if (!isOnWiFi) {
+                // WiFi not detected - show notification and revert switch
+                showNotification('Auto mode only works on WiFi', 'info', 5000);
+                switchElement.checked = false;
+                console.log('❌ Auto mode cannot be enabled: WiFi not detected');
+                return;
+            }
+        } catch (error) {
+            // If WiFi check fails, assume no WiFi and revert switch
+            console.error('❌ Error checking WiFi status:', error);
+            showNotification('Auto mode only works on WiFi', 'info', 5000);
+            switchElement.checked = false;
+            return;
+        }
+        
+        await switchToAutoMode();
+    } else {
+        // Check if connections exist
+        if (connections.size > 0) {
+            showNotification('Cannot disable auto mode while connected to peers', 'warning');
+            switchElement.checked = true;
+            return;
+        }
+        
+        await switchFromAutoMode();
     }
 }
 

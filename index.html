@@ -57,7 +57,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="One-Host">
 
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=686ea11" />
   <link rel="manifest" href="manifest.json">
   
   <!-- Google Analytics -->
@@ -70,7 +70,11 @@
   </script>
   
   <!-- Configuration -->
-  <script src="js/config/constants.js"></script>
+  <script src="js/config/constants.js?v=686ea11"></script>
+  <!-- Screen Wake Manager -->
+  <script src="js/services/screenWake.js?v=686ea11"></script>
+  <!-- Device Manager -->
+  <script src="js/services/deviceManager.js?v=686ea11"></script>
   <!-- Dynamic Meta Tags -->
   <script>
     // Update meta tags based on environment
@@ -100,9 +104,9 @@
     });
   </script>
   <!-- PeerJS for WebRTC -->
-  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js" integrity="sha384-PMNj1TmCgXfW24/rfIyxYSAWwj2mffkMfguUWv08iNFcy0kTC0JN7E/tE+pJ7+fa" crossorigin="anonymous"></script>
   <!-- QR Code generation -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
   <!-- Material Icons -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
@@ -164,7 +168,14 @@
     <main>
       <section id="connection-section">
         <div class="peer-info">
-          <h2>Your Peer ID</h2>
+          <h2 class="peer-id-header">
+            <span class="peer-id-title">Your Peer ID</span>
+            <label class="auto-mode-toggle-container">
+              <input type="checkbox" id="auto-mode-switch" class="auto-mode-switch">
+              <span class="toggle-slider"></span>
+              <span class="toggle-label" translate="no">Auto</span>
+            </label>
+          </h2>
           <div class="peer-id-container">
             <div class="peer-id-display">
               <span id="peer-id" translate="no">Generating...</span>
@@ -259,6 +270,6 @@
 
     <div id="notifications" class="notifications"></div>
   </div>
-  <script src="script.js"></script>
+  <script src="script.js?v=686ea11"></script>
 </body>
 </html>

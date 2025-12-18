@@ -1,6 +1,6 @@
 // Simple Environment Configuration
 // Change this single variable to switch between environments
-const CURRENT_ENVIRONMENT = 'production'; // Change to 'development' for dev
+const CURRENT_ENVIRONMENT = 'production'; // Change to 'production' for prod
 
 // Environment URLs
 const ENVIRONMENT_URLS = {
@@ -63,7 +63,8 @@ const MESSAGE_TYPES = {
     DISCONNECT_NOTIFICATION: 'disconnect-notification',
     SIMULTANEOUS_DOWNLOAD_REQUEST: 'simultaneous-download-request',
     SIMULTANEOUS_DOWNLOAD_READY: 'simultaneous-download-ready',
-    SIMULTANEOUS_DOWNLOAD_START: 'simultaneous-download-start'
+    SIMULTANEOUS_DOWNLOAD_START: 'simultaneous-download-start',
+    FORCE_DISABLE_AUTO_MODE: 'force-disable-auto-mode'
 };
 
 // Enhanced PeerJS Configuration with Multiple STUN and TURN Servers
