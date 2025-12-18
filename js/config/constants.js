@@ -1,6 +1,6 @@
 // Simple Environment Configuration
 // Change this single variable to switch between environments
-const CURRENT_ENVIRONMENT = 'production'; // Change to 'production' for prod
+const CURRENT_ENVIRONMENT = 'development'; // Change to 'production' for prod
 
 // Environment URLs
 const ENVIRONMENT_URLS = {
