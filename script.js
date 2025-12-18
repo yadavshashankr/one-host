@@ -1570,6 +1570,74 @@ function showTipNotification(message, type = 'info') {
     return notification;
 }
 
+// Show auto mode notification with X button (close only on X click, not on page click)
+function showAutoModeNotification(message, type = 'success') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type} auto-mode-notification`;
+    notification.style.position = 'relative';
+    
+    // Support line breaks by replacing \n with <br> and using innerHTML
+    const formattedMessage = message.replace(/\n/g, '<br>');
+    
+    // Create X button
+    const closeButton = document.createElement('button');
+    closeButton.className = 'notification-close';
+    closeButton.innerHTML = '×';
+    closeButton.setAttribute('aria-label', 'Close notification');
+    closeButton.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: none;
+        border: none;
+        font-size: 24px;
+        line-height: 1;
+        cursor: pointer;
+        color: inherit;
+        opacity: 0.7;
+        padding: 4px 8px;
+        transition: opacity 0.2s;
+    `;
+    closeButton.addEventListener('mouseenter', () => {
+        closeButton.style.opacity = '1';
+    });
+    closeButton.addEventListener('mouseleave', () => {
+        closeButton.style.opacity = '0.7';
+    });
+    
+    // Add content
+    const content = document.createElement('div');
+    content.innerHTML = formattedMessage;
+    content.style.paddingRight = '32px'; // Space for X button
+    
+    notification.appendChild(content);
+    notification.appendChild(closeButton);
+    
+    let isDismissed = false;
+    
+    // Dismiss function
+    const dismissNotification = () => {
+        if (isDismissed) return; // Prevent multiple dismissals
+        isDismissed = true;
+        
+        notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => {
+            notification.remove();
+        }, 300);
+    };
+    
+    // Handle X button click ONLY (no document click handler)
+    closeButton.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent event bubbling
+        dismissNotification();
+    });
+    
+    elements.notifications.appendChild(notification);
+    
+    return notification;
+}
+
 function resetConnection() {
     if (connections.size > 0) {
         connections.forEach((conn, peerId) => {
@@ -3898,7 +3966,7 @@ async function switchToAutoMode() {
         }
         
         // Store notification reference and show without auto-dismiss (duration = 0 means persistent)
-        autoModeNotification = showNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.\n\nAuto mode works only on WiFi / Local Network.', 'success', 0);
+        autoModeNotification = showAutoModeNotification('Auto mode enabled. Turn it on for other devices on the same Wi-Fi / Network to auto connect to this device.\n\nAuto mode works only on WiFi / Local Network.\n\nTo reset Auto mode, press & hold the \'Auto\' text on any connected device for 5 seconds.', 'success');
         
         // Track auto mode enable
         Analytics.track('auto_mode_enabled', {
