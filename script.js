@@ -3722,14 +3722,14 @@ async function updateAutoModeButtonVisibility() {
     autoModeContainer.style.display = 'none';
     
     try {
-        // Create a 500ms timeout promise
+        // Create a 2 second timeout promise
         const timeoutPromise = new Promise((resolve) => {
             setTimeout(() => {
                 resolve({ timeout: true, isOnWiFi: false });
-            }, 500);
+            }, 2000);
         });
         
-        // Race the WiFi check against 500ms timeout
+        // Race the WiFi check against 2 second timeout
         const checkPromise = hasMDNSInICE().then(isOnWiFi => ({ timeout: false, isOnWiFi }));
         
         const result = await Promise.race([checkPromise, timeoutPromise]);
@@ -3741,8 +3741,8 @@ async function updateAutoModeButtonVisibility() {
         const isMobileDevice = isAndroid || isIOS;
         
         if (result.timeout) {
-            // Took more than 500ms - assume cellular, keep switch hidden
-            console.log('⏱️ Auto mode check timed out (>500ms) - assuming cellular, keeping switch hidden');
+            // Took more than 2 seconds - assume cellular, keep switch hidden
+            console.log('⏱️ Auto mode check timed out (>2s) - assuming cellular, keeping switch hidden');
             autoModeContainer.style.display = 'none';
             
             // On Android/iOS, also disable the switch when WiFi is not detected
@@ -3762,7 +3762,7 @@ async function updateAutoModeButtonVisibility() {
             return;
         }
         
-        // Check completed within 500ms
+        // Check completed within 2 seconds
         const isOnWiFi = result.isOnWiFi;
         
         if (isOnWiFi) {
