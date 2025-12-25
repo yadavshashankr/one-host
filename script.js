@@ -160,6 +160,9 @@ const fileHistory = {
     received: new Set()
 };
 
+// Map to store actual file info objects for received files (for ZIP download)
+const receivedFileInfoMap = new Map(); // fileId -> fileInfo
+
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
 
@@ -757,6 +760,8 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                     };
                     // Add to history if not already present
                     if (!fileHistory.sent.has(data.fileId) && !fileHistory.received.has(data.fileId)) {
+                        // Store file info in Map for ZIP download
+                        receivedFileInfoMap.set(data.fileId, fileInfo);
                         addFileToHistory(fileInfo, 'received');
                         
                         // If this is the host, forward to other peers
@@ -1084,6 +1089,8 @@ async function handleFileComplete(data) {
 
         // Add to history if this is a new file info
         if (!fileHistory.sent.has(data.fileId) && !fileHistory.received.has(data.fileId)) {
+            // Store file info in Map for ZIP download
+            receivedFileInfoMap.set(data.fileId, fileInfo);
             addFileToHistory(fileInfo, 'received');
 
             // If this is the host peer, forward the file info to other connected peers
@@ -1418,7 +1425,8 @@ async function downloadAllReceivedFiles() {
             const fileId = item.getAttribute('data-file-id');
             if (!fileId) continue;
 
-            const fileInfo = fileHistory.received.get(fileId);
+            // Get file info from Map
+            const fileInfo = receivedFileInfoMap.get(fileId);
             if (!fileInfo) {
                 console.warn(`File info not found for file ID: ${fileId}`);
                 errors.push(`File ${fileId} not found`);
