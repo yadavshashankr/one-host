@@ -748,11 +748,39 @@ input[type="file"] {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
 .files-section h3 {
-    margin: 0 0 16px 0;
+    margin: 0;
     color: var(--text-color);
     font-size: 1.1rem;
     font-weight: 500;
+}
+
+.bulk-download-btn {
+    margin-left: auto;
+}
+
+.bulk-download-btn .material-icons {
+    color: var(--primary-color);
+}
+
+.bulk-download-btn:hover {
+    background-color: rgba(33, 150, 243, 0.1);
+}
+
+.bulk-download-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.bulk-download-btn:disabled:hover {
+    background-color: transparent;
 }
 
 /* Recent peers dropdown */

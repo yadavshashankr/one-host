@@ -117,6 +117,7 @@ const elements = {
     notifications: document.getElementById('notifications'),
     sentFilesList: document.getElementById('sent-files-list'),
     receivedFilesList: document.getElementById('received-files-list'),
+    bulkDownloadReceived: document.getElementById('bulk-download-received'),
     recentPeers: document.getElementById('recent-peers'),
     recentPeersList: document.getElementById('recent-peers-list'),
     clearPeers: document.getElementById('clear-peers'),
@@ -1005,6 +1006,9 @@ async function handleFileComplete(data) {
                         window.open(blobUrl, '_blank');
                     };
                 }
+                
+                // Update bulk download button state when a file is completed
+                updateBulkDownloadButtonState();
             }
         }
 
@@ -1225,6 +1229,108 @@ async function requestAndDownloadBlob(fileInfo) {
         elements.transferProgress.classList.add('hidden');
         updateTransferInfo('');
     }
+}
+
+// Function to download all received files that haven't been downloaded yet
+async function downloadAllReceivedFiles() {
+    const receivedList = elements.receivedFilesList;
+    if (!receivedList) {
+        console.error('Received files list not found');
+        return;
+    }
+
+    // Get all file items that are not already downloaded
+    const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
+    
+    if (fileItems.length === 0) {
+        showNotification('All files already downloaded', 'info');
+        return;
+    }
+
+    // Disable button during download
+    if (elements.bulkDownloadReceived) {
+        elements.bulkDownloadReceived.disabled = true;
+    }
+
+    // Track bulk download initiation
+    Analytics.track('bulk_download_initiated', {
+        file_count: fileItems.length,
+        device_type: Analytics.getDeviceType()
+    });
+
+    showNotification(`Downloading ${fileItems.length} file(s)...`, 'info');
+
+    let successCount = 0;
+    let failCount = 0;
+
+    // Download each file sequentially to avoid overwhelming the connection
+    for (const item of fileItems) {
+        const fileId = item.getAttribute('data-file-id');
+        if (!fileId) continue;
+
+        // Check if file is already downloaded (safety check)
+        if (item.classList.contains('download-completed')) {
+            continue;
+        }
+
+        // Get file info from history
+        const fileInfo = fileHistory.received.get(fileId);
+        if (!fileInfo) {
+            console.warn(`File info not found for file ID: ${fileId}`);
+            failCount++;
+            continue;
+        }
+
+        try {
+            await requestAndDownloadBlob(fileInfo);
+            successCount++;
+            
+            // Small delay between downloads to avoid overwhelming the connection
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (error) {
+            console.error(`Error downloading file ${fileInfo.name}:`, error);
+            failCount++;
+            // Continue with next file even if one fails
+        }
+    }
+
+    // Re-enable button
+    if (elements.bulkDownloadReceived) {
+        elements.bulkDownloadReceived.disabled = false;
+    }
+
+    // Show summary notification
+    if (successCount > 0 && failCount === 0) {
+        showNotification(`Successfully downloaded ${successCount} file(s)`, 'success');
+    } else if (successCount > 0 && failCount > 0) {
+        showNotification(`Downloaded ${successCount} file(s), ${failCount} failed`, 'warning');
+    } else {
+        showNotification(`Failed to download ${failCount} file(s)`, 'error');
+    }
+
+    // Track bulk download completion
+    Analytics.track('bulk_download_completed', {
+        total_files: fileItems.length,
+        success_count: successCount,
+        fail_count: failCount,
+        device_type: Analytics.getDeviceType()
+    });
+
+    // Update button state after download
+    updateBulkDownloadButtonState();
+}
+
+// Function to update bulk download button state (enable/disable based on available files)
+function updateBulkDownloadButtonState() {
+    if (!elements.bulkDownloadReceived || !elements.receivedFilesList) {
+        return;
+    }
+
+    const receivedList = elements.receivedFilesList;
+    const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
+    
+    // Disable button if no files to download
+    elements.bulkDownloadReceived.disabled = fileItems.length === 0;
 }
 
 // Handle forwarded blob request (host only)
@@ -1804,6 +1910,13 @@ elements.connectButton.addEventListener('click', () => {
     }
 });
 
+// Bulk download button for received files
+if (elements.bulkDownloadReceived) {
+    elements.bulkDownloadReceived.addEventListener('click', () => {
+        downloadAllReceivedFiles();
+    });
+}
+
 // Add Enter key support for connecting to peer
 elements.remotePeerId.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
@@ -1981,6 +2094,9 @@ function init() {
     // in the peer.on('open') handler to ensure DOM is ready
     
     elements.transferProgress.classList.add('hidden'); // Always hide transfer bar
+    
+    // Initialize bulk download button state
+    updateBulkDownloadButtonState();
     
     // Add event delegation for peer ID editing to handle translation interference
     document.addEventListener('click', (e) => {
