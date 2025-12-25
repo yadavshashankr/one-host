@@ -783,6 +783,14 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                     await handleForwardedBlobRequest(data, conn);
                     break;
                 case 'blob-error':
+                    // Check if this is a ZIP blob request
+                    if (pendingBlobRequests.has(data.fileId)) {
+                        const request = pendingBlobRequests.get(data.fileId);
+                        pendingBlobRequests.delete(data.fileId);
+                        request.reject(new Error(data.error || 'Failed to download file'));
+                        return;
+                    }
+                    
                     showNotification(`Failed to download file: ${data.error}`, 'error');
                     elements.transferProgress.classList.add('hidden');
                     updateTransferInfo('');
@@ -941,6 +949,18 @@ async function handleForceDisableAutoMode(data, conn) {
 // Handle file header
 async function handleFileHeader(data) {
     console.log('Received file header:', data);
+    
+    // Check if this is a ZIP blob request
+    if (pendingBlobRequests.has(data.fileId)) {
+        const request = pendingBlobRequests.get(data.fileId);
+        request.fileData.fileName = data.fileName;
+        request.fileData.fileType = data.fileType;
+        request.fileData.fileSize = data.fileSize;
+        request.fileData.receivedSize = 0;
+        request.chunks = [];
+        return; // Don't process as regular file download
+    }
+    
     fileChunks[data.fileId] = {
         chunks: [],
         fileName: data.fileName,
@@ -956,6 +976,14 @@ async function handleFileHeader(data) {
 
 // Handle file chunk
 async function handleFileChunk(data) {
+    // Check if this is a ZIP blob request
+    if (pendingBlobRequests.has(data.fileId)) {
+        const request = pendingBlobRequests.get(data.fileId);
+        request.chunks.push(data.data);
+        request.fileData.receivedSize += data.data.byteLength;
+        return; // Don't process as regular file download
+    }
+    
     const fileData = fileChunks[data.fileId];
     if (!fileData) return;
 
@@ -972,6 +1000,31 @@ async function handleFileChunk(data) {
 
 // Handle file completion
 async function handleFileComplete(data) {
+    // Check if this is a ZIP blob request
+    if (pendingBlobRequests.has(data.fileId)) {
+        const request = pendingBlobRequests.get(data.fileId);
+        pendingBlobRequests.delete(data.fileId);
+        
+        try {
+            if (request.chunks.length > 0) {
+                const blob = new Blob(request.chunks, { type: request.fileData.fileType });
+                
+                // Verify file size
+                if (blob.size !== request.fileData.fileSize) {
+                    throw new Error('Received file size does not match expected size');
+                }
+                
+                // Resolve the promise with the blob
+                request.resolve(blob);
+            } else {
+                request.reject(new Error('No chunks received'));
+            }
+        } catch (error) {
+            request.reject(error);
+        }
+        return; // Don't process as regular file download
+    }
+    
     const fileData = fileChunks[data.fileId];
     if (!fileData) return;
 
@@ -1185,6 +1238,84 @@ async function handleBlobRequest(data, conn) {
     }
 }
 
+// Map to store pending blob requests for ZIP creation
+const pendingBlobRequests = new Map(); // fileId -> { resolve, reject, chunks, fileData }
+
+// Function to request a blob from peer (for ZIP creation, doesn't trigger download)
+async function requestBlobFromPeer(fileInfo) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Always try to connect to original sender directly
+            let conn = connections.get(fileInfo.sharedBy);
+            
+            if (!conn || !conn.open) {
+                // If no direct connection exists, establish one
+                console.log('No direct connection to sender, establishing connection...');
+                conn = peer.connect(fileInfo.sharedBy, {
+                    reliable: true
+                });
+                
+                // Wait for connection to open
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        reject(new Error('Connection timeout'));
+                    }, 10000); // 10 second timeout
+
+                    conn.on('open', () => {
+                        clearTimeout(timeout);
+                        connections.set(fileInfo.sharedBy, conn);
+                        setupConnectionHandlers(conn);
+                        resolve();
+                    });
+
+                    conn.on('error', (err) => {
+                        clearTimeout(timeout);
+                        reject(err);
+                    });
+                });
+            }
+
+            // Set up blob request tracking
+            const requestId = fileInfo.id;
+            const fileData = {
+                chunks: [],
+                receivedSize: 0,
+                fileName: fileInfo.name,
+                fileType: fileInfo.type,
+                fileSize: fileInfo.size
+            };
+
+            pendingBlobRequests.set(requestId, {
+                resolve,
+                reject,
+                chunks: fileData.chunks,
+                fileData: fileData
+            });
+
+            // Request the file directly
+            conn.send({
+                type: 'blob-request',
+                fileId: fileInfo.id,
+                fileName: fileInfo.name,
+                directRequest: true,
+                forZip: true // Flag to indicate this is for ZIP, not direct download
+            });
+
+            // Set timeout for blob request
+            setTimeout(() => {
+                if (pendingBlobRequests.has(requestId)) {
+                    pendingBlobRequests.delete(requestId);
+                    reject(new Error('Blob request timeout'));
+                }
+            }, 60000); // 60 second timeout
+
+        } catch (error) {
+            console.error('Error requesting blob:', error);
+            reject(error);
+        }
+    });
+}
+
 // Function to request and download a blob
 async function requestAndDownloadBlob(fileInfo) {
     try {
@@ -1247,12 +1378,10 @@ async function downloadAllReceivedFiles() {
         return;
     }
 
-    // Get all download buttons in non-completed file items
-    const downloadButtons = receivedList.querySelectorAll(
-        'li.file-item:not(.download-completed) .icon-button'
-    );
+    // Get all file items that are not already downloaded
+    const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
     
-    if (downloadButtons.length === 0) {
+    if (fileItems.length === 0) {
         showNotification('All files already downloaded', 'info');
         return;
     }
@@ -1264,53 +1393,135 @@ async function downloadAllReceivedFiles() {
 
     // Track bulk download initiation
     Analytics.track('bulk_download_initiated', {
-        file_count: downloadButtons.length,
-        device_type: Analytics.getDeviceType()
+        file_count: fileItems.length,
+        device_type: Analytics.getDeviceType(),
+        download_method: 'zip'
     });
 
-    // Initialize download progress tracking
-    bulkDownloadProgress.total = downloadButtons.length;
-    bulkDownloadProgress.completed = 0;
-    bulkDownloadProgress.isBulkDownload = true;
-    
     // Show initial progress notification
-    showOrUpdateProgressNotification('downloading', 0, downloadButtons.length, 'downloading');
+    showOrUpdateProgressNotification('downloading', 0, fileItems.length, 'downloading');
 
-    // Trigger click on each download button sequentially
-    // This ensures we use the same download logic as individual downloads
-    for (let i = 0; i < downloadButtons.length; i++) {
-        const button = downloadButtons[i];
-        
-        // Check if button is still in a non-completed item (safety check)
-        const listItem = button.closest('li.file-item');
-        if (listItem && !listItem.classList.contains('download-completed')) {
-            // Trigger the click event on the download button
-            button.click();
-            
-            // Small delay between downloads to avoid overwhelming the connection
-            if (i < downloadButtons.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 500));
+    try {
+        // Check if JSZip is available
+        if (typeof JSZip === 'undefined') {
+            throw new Error('JSZip library not loaded');
+        }
+
+        // Create JSZip instance
+        const zip = new JSZip();
+        let completed = 0;
+        const errors = [];
+        const successfulFileIds = new Set(); // Track successfully added files
+
+        // Fetch all file blobs and add to ZIP
+        for (const item of fileItems) {
+            const fileId = item.getAttribute('data-file-id');
+            if (!fileId) continue;
+
+            const fileInfo = fileHistory.received.get(fileId);
+            if (!fileInfo) {
+                console.warn(`File info not found for file ID: ${fileId}`);
+                errors.push(`File ${fileId} not found`);
+                continue;
+            }
+
+            try {
+                // Update progress
+                showOrUpdateProgressNotification('downloading', completed, fileItems.length, 'downloading');
+                
+                // Request blob from peer
+                const blob = await requestBlobFromPeer(fileInfo);
+                
+                // Handle duplicate filenames by adding a number suffix
+                let fileName = fileInfo.name;
+                let counter = 1;
+                while (zip.file(fileName)) {
+                    const nameParts = fileInfo.name.split('.');
+                    const ext = nameParts.length > 1 ? '.' + nameParts.pop() : '';
+                    const baseName = nameParts.join('.');
+                    fileName = `${baseName} (${counter})${ext}`;
+                    counter++;
+                }
+                
+                // Add to ZIP with no compression (STORE method)
+                zip.file(fileName, blob, { compression: 'STORE' });
+                
+                successfulFileIds.add(fileId);
+                completed++;
+                showOrUpdateProgressNotification('downloading', completed, fileItems.length, 'downloading');
+            } catch (error) {
+                console.error(`Error fetching file ${fileInfo.name}:`, error);
+                errors.push(fileInfo.name);
+                // Continue with other files
             }
         }
-    }
 
-    // Re-enable button after a delay to allow downloads to start
-    setTimeout(() => {
+        if (completed === 0) {
+            throw new Error('Failed to fetch any files');
+        }
+
+        // Update progress - creating ZIP
+        showOrUpdateProgressNotification('downloading', completed, fileItems.length, 'downloading');
+
+        // Generate ZIP blob with no compression
+        const zipBlob = await zip.generateAsync({ 
+            type: 'blob',
+            compression: 'STORE', // No compression - maintain file integrity
+            compressionOptions: null
+        });
+
+        // Download ZIP file
+        const zipFileName = `files-${Date.now()}.zip`;
+        downloadBlob(zipBlob, zipFileName, null);
+
+        // Mark all successfully added files as downloaded
+        for (const item of fileItems) {
+            const fileId = item.getAttribute('data-file-id');
+            if (fileId && successfulFileIds.has(fileId)) {
+                item.classList.add('download-completed');
+                const downloadButton = item.querySelector('.icon-button');
+                if (downloadButton) {
+                    downloadButton.classList.add('download-completed');
+                    downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                    downloadButton.title = 'File included in ZIP';
+                }
+            }
+        }
+
+        // Show success notification
+        if (errors.length === 0) {
+            showNotification(`Successfully created ZIP with ${completed} file(s)`, 'success');
+        } else {
+            showNotification(`ZIP created with ${completed} file(s), ${errors.length} failed`, 'warning');
+        }
+
+        // Track bulk download completion
+        Analytics.track('bulk_download_completed', {
+            total_files: fileItems.length,
+            success_count: completed,
+            fail_count: errors.length,
+            device_type: Analytics.getDeviceType(),
+            download_method: 'zip'
+        });
+
+    } catch (error) {
+        console.error('Error creating ZIP:', error);
+        showNotification(`Failed to create ZIP: ${error.message}`, 'error');
+        
+        // Track ZIP creation failure
+        Analytics.track('bulk_download_failed', {
+            error_message: error.message,
+            device_type: Analytics.getDeviceType(),
+            download_method: 'zip'
+        });
+    } finally {
+        // Re-enable button
         if (elements.bulkDownloadReceived) {
             elements.bulkDownloadReceived.disabled = false;
         }
-        // Update button state after downloads have started
+        // Update button state
         updateBulkDownloadButtonState();
-        
-        // Reset download progress after a delay (allows final notifications to update)
-        setTimeout(() => {
-            if (bulkDownloadProgress.completed >= bulkDownloadProgress.total) {
-                bulkDownloadProgress.isBulkDownload = false;
-                bulkDownloadProgress.total = 0;
-                bulkDownloadProgress.completed = 0;
-            }
-        }, 3000);
-    }, 1000);
+    }
 }
 
 // Function to update bulk download button state (enable/disable and show/hide based on available files)
