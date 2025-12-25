@@ -764,8 +764,11 @@ input[type="file"] {
 
 .bulk-download-btn {
     margin-left: auto;
-    /* Match the end padding/alignment of download buttons in list rows */
-    /* List items have gap: 12px, so button should align with download icon column */
+    /* Match the end padding of download buttons in list rows */
+    /* List items have padding: 12px + icon-button has padding: 8px = 20px total */
+    padding-right: 20px;
+    /* Initially hidden, shown when 2+ files are received */
+    display: none;
 }
 
 .bulk-download-btn .material-icons {

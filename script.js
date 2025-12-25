@@ -987,7 +987,15 @@ async function handleFileComplete(data) {
 
             // Create download URL and trigger download
             downloadBlob(blob, fileData.fileName, data.fileId);
-            showNotification(`Downloaded ${fileData.fileName}`, 'success');
+            
+            // Update download progress if bulk download is in progress
+            if (bulkDownloadProgress.isBulkDownload && bulkDownloadProgress.total > 0) {
+                bulkDownloadProgress.completed++;
+                showOrUpdateProgressNotification('downloading', bulkDownloadProgress.completed, bulkDownloadProgress.total, 'downloading');
+            } else {
+                // Only show individual notification if not bulk download
+                showNotification(`Downloaded ${fileData.fileName}`, 'success');
+            }
 
             // Update UI to show completed state
             const listItem = document.querySelector(`[data-file-id="${data.fileId}"]`);
@@ -1260,7 +1268,13 @@ async function downloadAllReceivedFiles() {
         device_type: Analytics.getDeviceType()
     });
 
-    showNotification(`Downloading ${downloadButtons.length} file(s)...`, 'info');
+    // Initialize download progress tracking
+    bulkDownloadProgress.total = downloadButtons.length;
+    bulkDownloadProgress.completed = 0;
+    bulkDownloadProgress.isBulkDownload = true;
+    
+    // Show initial progress notification
+    showOrUpdateProgressNotification('downloading', 0, downloadButtons.length, 'downloading');
 
     // Trigger click on each download button sequentially
     // This ensures we use the same download logic as individual downloads
@@ -1287,10 +1301,19 @@ async function downloadAllReceivedFiles() {
         }
         // Update button state after downloads have started
         updateBulkDownloadButtonState();
+        
+        // Reset download progress after a delay (allows final notifications to update)
+        setTimeout(() => {
+            if (bulkDownloadProgress.completed >= bulkDownloadProgress.total) {
+                bulkDownloadProgress.isBulkDownload = false;
+                bulkDownloadProgress.total = 0;
+                bulkDownloadProgress.completed = 0;
+            }
+        }, 3000);
     }, 1000);
 }
 
-// Function to update bulk download button state (enable/disable based on available files)
+// Function to update bulk download button state (enable/disable and show/hide based on available files)
 function updateBulkDownloadButtonState() {
     if (!elements.bulkDownloadReceived || !elements.receivedFilesList) {
         return;
@@ -1299,8 +1322,14 @@ function updateBulkDownloadButtonState() {
     const receivedList = elements.receivedFilesList;
     const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
     
-    // Disable button if no files to download
-    elements.bulkDownloadReceived.disabled = fileItems.length === 0;
+    // Hide button if less than 2 files, show if 2 or more
+    if (fileItems.length < 2) {
+        elements.bulkDownloadReceived.style.display = 'none';
+    } else {
+        elements.bulkDownloadReceived.style.display = 'flex';
+        // Enable button if there are files to download
+        elements.bulkDownloadReceived.disabled = fileItems.length === 0;
+    }
 }
 
 // Handle forwarded blob request (host only)
@@ -1399,16 +1428,27 @@ async function processFileQueue() {
     if (isProcessingQueue || fileQueue.length === 0) return;
     
     isProcessingQueue = true;
+    const totalFiles = fileQueue.length;
+    let completedFiles = 0;
+    
+    // Show initial progress notification
+    showOrUpdateProgressNotification('sending', 0, totalFiles, 'sending');
     updateTransferInfo(`Processing queue: ${fileQueue.length} file(s) remaining`);
     
     while (fileQueue.length > 0) {
         const file = fileQueue.shift();
         try {
             await sendFile(file);
+            completedFiles++;
+            // Update progress notification
+            showOrUpdateProgressNotification('sending', completedFiles, totalFiles, 'sending');
             // Small delay between files to prevent overwhelming the connection
             await new Promise(resolve => setTimeout(resolve, 500));
         } catch (error) {
             console.error('Error processing file from queue:', error);
+            completedFiles++;
+            // Update progress even on error
+            showOrUpdateProgressNotification('sending', completedFiles, totalFiles, 'sending');
             showNotification(`Failed to send ${file.name}: ${error.message}`, 'error');
         }
     }
@@ -1471,7 +1511,10 @@ async function sendFile(file) {
         }
 
         if (successCount > 0) {
-            showNotification(`${file.name} sent successfully`, 'success');
+            // Only show individual notification if not processing queue (single file send)
+            if (!isProcessingQueue) {
+                showNotification(`${file.name} sent successfully`, 'success');
+            }
             
             // Track successful file send
             Analytics.track('file_sent_successfully', {
@@ -1577,6 +1620,19 @@ function formatFileSize(bytes) {
     return `<span translate="no">${size.toFixed(1)} ${units[unitIndex]}</span>`;
 }
 
+// Track active progress notifications
+const activeProgressNotifications = {
+    sending: null,
+    downloading: null
+};
+
+// Track bulk download progress
+let bulkDownloadProgress = {
+    total: 0,
+    completed: 0,
+    isBulkDownload: false
+};
+
 function showNotification(message, type = 'info', duration = 5000) {
     const notification = document.createElement('div');
     notification.className = `notification ${type}`;
@@ -1594,6 +1650,38 @@ function showNotification(message, type = 'info', duration = 5000) {
     }
     
     return notification; // Return notification element for manual dismissal
+}
+
+// Function to show or update a progress notification for multiple files
+function showOrUpdateProgressNotification(key, current, total, operation = 'sending') {
+    const operationText = operation === 'sending' ? 'Sending' : 'Downloading';
+    const message = `${operationText} files: ${current}/${total}`;
+    
+    let notification = activeProgressNotifications[key];
+    
+    if (!notification) {
+        // Create new notification
+        notification = document.createElement('div');
+        notification.className = `notification info progress-notification`;
+        notification.setAttribute('data-progress-key', key);
+        elements.notifications.appendChild(notification);
+        activeProgressNotifications[key] = notification;
+    }
+    
+    // Update notification content
+    notification.innerHTML = message;
+    
+    // If all files are done, mark for removal after a delay
+    if (current >= total) {
+        setTimeout(() => {
+            if (notification && notification.parentNode) {
+                notification.remove();
+            }
+            activeProgressNotifications[key] = null;
+        }, 2000);
+    }
+    
+    return notification;
 }
 
 // Show tip notification with X button and click-to-dismiss functionality
