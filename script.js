@@ -1239,10 +1239,12 @@ async function downloadAllReceivedFiles() {
         return;
     }
 
-    // Get all file items that are not already downloaded
-    const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
+    // Get all download buttons in non-completed file items
+    const downloadButtons = receivedList.querySelectorAll(
+        'li.file-item:not(.download-completed) .icon-button'
+    );
     
-    if (fileItems.length === 0) {
+    if (downloadButtons.length === 0) {
         showNotification('All files already downloaded', 'info');
         return;
     }
@@ -1254,70 +1256,38 @@ async function downloadAllReceivedFiles() {
 
     // Track bulk download initiation
     Analytics.track('bulk_download_initiated', {
-        file_count: fileItems.length,
+        file_count: downloadButtons.length,
         device_type: Analytics.getDeviceType()
     });
 
-    showNotification(`Downloading ${fileItems.length} file(s)...`, 'info');
+    showNotification(`Downloading ${downloadButtons.length} file(s)...`, 'info');
 
-    let successCount = 0;
-    let failCount = 0;
-
-    // Download each file sequentially to avoid overwhelming the connection
-    for (const item of fileItems) {
-        const fileId = item.getAttribute('data-file-id');
-        if (!fileId) continue;
-
-        // Check if file is already downloaded (safety check)
-        if (item.classList.contains('download-completed')) {
-            continue;
-        }
-
-        // Get file info from history
-        const fileInfo = fileHistory.received.get(fileId);
-        if (!fileInfo) {
-            console.warn(`File info not found for file ID: ${fileId}`);
-            failCount++;
-            continue;
-        }
-
-        try {
-            await requestAndDownloadBlob(fileInfo);
-            successCount++;
+    // Trigger click on each download button sequentially
+    // This ensures we use the same download logic as individual downloads
+    for (let i = 0; i < downloadButtons.length; i++) {
+        const button = downloadButtons[i];
+        
+        // Check if button is still in a non-completed item (safety check)
+        const listItem = button.closest('li.file-item');
+        if (listItem && !listItem.classList.contains('download-completed')) {
+            // Trigger the click event on the download button
+            button.click();
             
             // Small delay between downloads to avoid overwhelming the connection
-            await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (error) {
-            console.error(`Error downloading file ${fileInfo.name}:`, error);
-            failCount++;
-            // Continue with next file even if one fails
+            if (i < downloadButtons.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
         }
     }
 
-    // Re-enable button
-    if (elements.bulkDownloadReceived) {
-        elements.bulkDownloadReceived.disabled = false;
-    }
-
-    // Show summary notification
-    if (successCount > 0 && failCount === 0) {
-        showNotification(`Successfully downloaded ${successCount} file(s)`, 'success');
-    } else if (successCount > 0 && failCount > 0) {
-        showNotification(`Downloaded ${successCount} file(s), ${failCount} failed`, 'warning');
-    } else {
-        showNotification(`Failed to download ${failCount} file(s)`, 'error');
-    }
-
-    // Track bulk download completion
-    Analytics.track('bulk_download_completed', {
-        total_files: fileItems.length,
-        success_count: successCount,
-        fail_count: failCount,
-        device_type: Analytics.getDeviceType()
-    });
-
-    // Update button state after download
-    updateBulkDownloadButtonState();
+    // Re-enable button after a delay to allow downloads to start
+    setTimeout(() => {
+        if (elements.bulkDownloadReceived) {
+            elements.bulkDownloadReceived.disabled = false;
+        }
+        // Update button state after downloads have started
+        updateBulkDownloadButtonState();
+    }, 1000);
 }
 
 // Function to update bulk download button state (enable/disable based on available files)
@@ -2513,6 +2483,9 @@ function updateFilesList(listElement, fileInfo, type) {
         setTimeout(() => {
             li.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 100);
+        
+        // Update bulk download button state when a new received file is added
+        updateBulkDownloadButtonState();
     }
     
     console.log('File list updated successfully');

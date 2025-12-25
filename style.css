@@ -764,6 +764,8 @@ input[type="file"] {
 
 .bulk-download-btn {
     margin-left: auto;
+    /* Match the end padding/alignment of download buttons in list rows */
+    /* List items have gap: 12px, so button should align with download icon column */
 }
 
 .bulk-download-btn .material-icons {
