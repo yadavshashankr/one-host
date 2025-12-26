@@ -5,8 +5,9 @@ class BulkDownloadManager {
     constructor(memoryMonitor, zipPartManager) {
         this.memoryMonitor = memoryMonitor;
         this.zipPartManager = zipPartManager;
-        this.MEMORY_THRESHOLD = 70; // Start splitting at 70%
-        this.MEMORY_SAFETY_LIMIT = 80; // Hard limit at 80%
+        this.MEMORY_THRESHOLD = 60; // Start splitting at 60% (more aggressive)
+        this.MEMORY_SAFETY_LIMIT = 75; // Hard limit at 75% (before JSZip fails)
+        this.MAX_FILES_PER_PART = 10; // Maximum files per ZIP part (safety limit)
     }
 
     // Main method to download all files with memory-aware ZIP part splitting
@@ -70,12 +71,13 @@ class BulkDownloadManager {
             const memoryUsage = this.memoryMonitor.getMemoryUsagePercent();
             const shouldCreatePart = memoryUsage !== null && (
                 memoryUsage >= this.MEMORY_THRESHOLD || 
-                (currentBatch.length > 0 && memoryUsage >= this.MEMORY_SAFETY_LIMIT)
+                (currentBatch.length > 0 && memoryUsage >= this.MEMORY_SAFETY_LIMIT) ||
+                currentBatch.length >= this.MAX_FILES_PER_PART // Safety: max files per part
             );
 
             // If memory is approaching limit and we have files in current batch, create ZIP part
             if (shouldCreatePart && currentBatch.length > 0) {
-                console.log(`📦 Memory at ${memoryUsage}%, creating ZIP part ${partNumber} with ${currentBatch.length} files`);
+                console.log(`📦 Memory at ${memoryUsage}% or ${currentBatch.length} files, creating ZIP part ${partNumber} with ${currentBatch.length} files`);
                 
                 // Generate and download current ZIP part
                 await this.createAndDownloadPart(
@@ -95,8 +97,8 @@ class BulkDownloadManager {
                 currentBatchSize = 0;
                 partNumber++;
 
-                // Small delay to allow memory cleanup
-                await new Promise(resolve => setTimeout(resolve, 100));
+                // Longer delay to allow memory cleanup and garbage collection
+                await new Promise(resolve => setTimeout(resolve, 300));
 
                 // Log memory after cleanup
                 this.memoryMonitor.logMemoryStatus(`after ZIP part ${partNumber - 1} cleanup`);
@@ -161,6 +163,32 @@ class BulkDownloadManager {
                 successfulFileIds.add(fileId);
                 totalCompleted++;
 
+                // Check memory AFTER adding to ZIP (critical check)
+                const memoryAfterAdd = this.memoryMonitor.getMemoryUsagePercent();
+                if (memoryAfterAdd !== null && memoryAfterAdd >= this.MEMORY_SAFETY_LIMIT) {
+                    console.warn(`⚠️ Memory at ${memoryAfterAdd}% after adding ${fileInfo.name} to ZIP, creating part now`);
+                    
+                    // Create ZIP part immediately
+                    await this.createAndDownloadPart(
+                        currentZip,
+                        currentBatch,
+                        partNumber,
+                        fileItemsArray.length,
+                        totalCompleted,
+                        showOrUpdateProgressNotification,
+                        downloadBlob
+                    );
+
+                    // Clear and reset
+                    this.zipPartManager.cleanupZipInstance(currentZip);
+                    currentZip = this.zipPartManager.createZipInstance();
+                    currentBatch = [];
+                    currentBatchSize = 0;
+                    partNumber++;
+
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+
                 // Log memory periodically
                 if (totalCompleted % 5 === 0) {
                     this.memoryMonitor.logMemoryStatus(`after processing ${totalCompleted} files`);
@@ -211,25 +239,40 @@ class BulkDownloadManager {
         }
 
         // Log memory before ZIP generation
+        const memoryBeforeZip = this.memoryMonitor.getMemoryUsagePercent();
         this.memoryMonitor.logMemoryStatus(`before generating ZIP part ${partNumber}`);
 
-        // Generate ZIP blob with no compression
-        const zipBlob = await this.zipPartManager.generateZipBlob(zip, {
-            type: 'blob',
-            compression: 'STORE',
-            compressionOptions: null
-        });
+        // Critical check: If memory is already too high, we might fail
+        if (memoryBeforeZip !== null && memoryBeforeZip >= this.MEMORY_SAFETY_LIMIT) {
+            console.warn(`⚠️ Memory at ${memoryBeforeZip}% before ZIP generation - this might fail. Consider smaller batches.`);
+        }
 
-        // Log memory after ZIP generation
-        const memoryAfterZip = this.memoryMonitor.getMemoryUsagePercent();
-        const zipSize = this.memoryMonitor.formatBytes(zipBlob.size);
-        console.log(`📦 ZIP part ${partNumber} created: ${zipSize} (Memory: ${memoryAfterZip}%)`);
+        try {
+            // Generate ZIP blob with no compression
+            const zipBlob = await this.zipPartManager.generateZipBlob(zip, {
+                type: 'blob',
+                compression: 'STORE',
+                compressionOptions: null
+            });
 
-        // Download ZIP part file
-        const totalParts = partNumber; // Will be updated as we create more parts
-        this.zipPartManager.downloadZipPart(zipBlob, partNumber, totalParts, downloadBlob);
+            // Log memory after ZIP generation
+            const memoryAfterZip = this.memoryMonitor.getMemoryUsagePercent();
+            const zipSize = this.memoryMonitor.formatBytes(zipBlob.size);
+            console.log(`📦 ZIP part ${partNumber} created: ${zipSize} (Memory: ${memoryAfterZip}%)`);
 
-        console.log(`✅ ZIP part ${partNumber} downloaded`);
+            // Download ZIP part file
+            const totalParts = partNumber; // Will be updated as we create more parts
+            this.zipPartManager.downloadZipPart(zipBlob, partNumber, totalParts, downloadBlob);
+
+            console.log(`✅ ZIP part ${partNumber} downloaded`);
+        } catch (error) {
+            // If ZIP generation fails due to memory, try to recover
+            if (error.message && error.message.includes('allocation failed')) {
+                console.error(`❌ ZIP generation failed due to memory allocation error. Batch size: ${batch.length} files`);
+                throw new Error(`Memory allocation failed. Try downloading fewer files at once or use smaller batches. Current batch: ${batch.length} files`);
+            }
+            throw error;
+        }
     }
 
     // Check if we should create a ZIP part based on memory and batch size
@@ -239,9 +282,14 @@ class BulkDownloadManager {
     }
 
     // Set memory thresholds (for customization)
-    setMemoryThresholds(threshold = 70, safetyLimit = 80) {
+    setMemoryThresholds(threshold = 60, safetyLimit = 75) {
         this.MEMORY_THRESHOLD = threshold;
         this.MEMORY_SAFETY_LIMIT = safetyLimit;
+    }
+
+    // Set maximum files per part
+    setMaxFilesPerPart(maxFiles = 10) {
+        this.MAX_FILES_PER_PART = maxFiles;
     }
 }
 
