@@ -7,7 +7,7 @@ class BulkDownloadManager {
         this.zipPartManager = zipPartManager;
         this.MEMORY_THRESHOLD = 60; // Start splitting at 60% (more aggressive)
         this.MEMORY_SAFETY_LIMIT = 75; // Hard limit at 75% (before JSZip fails)
-        this.MAX_FILES_PER_PART = 10; // Maximum files per ZIP part (safety limit)
+        this.MIN_PART_SIZE = 400 * 1024 * 1024; // Minimum ZIP part size: 400 MB (in bytes)
     }
 
     // Main method to download all files with memory-aware ZIP part splitting
@@ -69,15 +69,26 @@ class BulkDownloadManager {
 
             // Check memory before fetching next file
             const memoryUsage = this.memoryMonitor.getMemoryUsagePercent();
-            const shouldCreatePart = memoryUsage !== null && (
-                memoryUsage >= this.MEMORY_THRESHOLD || 
-                (currentBatch.length > 0 && memoryUsage >= this.MEMORY_SAFETY_LIMIT) ||
-                currentBatch.length >= this.MAX_FILES_PER_PART // Safety: max files per part
+            const batchSizeMB = this.memoryMonitor.formatBytes(currentBatchSize);
+            
+            // Determine if we should create a ZIP part
+            // Priority: Memory safety > Minimum part size (400 MB)
+            const shouldCreatePart = (
+                // Memory safety checks (highest priority)
+                (memoryUsage !== null && (
+                    memoryUsage >= this.MEMORY_THRESHOLD || 
+                    (currentBatch.length > 0 && memoryUsage >= this.MEMORY_SAFETY_LIMIT)
+                )) ||
+                // Minimum part size reached (400 MB)
+                (currentBatchSize >= this.MIN_PART_SIZE)
             );
 
-            // If memory is approaching limit and we have files in current batch, create ZIP part
+            // If we should create a part and we have files in current batch, create ZIP part
             if (shouldCreatePart && currentBatch.length > 0) {
-                console.log(`📦 Memory at ${memoryUsage}% or ${currentBatch.length} files, creating ZIP part ${partNumber} with ${currentBatch.length} files`);
+                const reason = memoryUsage !== null && memoryUsage >= this.MEMORY_SAFETY_LIMIT ? 'memory safety' :
+                              memoryUsage !== null && memoryUsage >= this.MEMORY_THRESHOLD ? 'memory threshold' :
+                              'minimum size reached (400 MB)';
+                console.log(`📦 Creating ZIP part ${partNumber} (${reason}): ${currentBatch.length} files, ${batchSizeMB}`);
                 
                 // Generate and download current ZIP part
                 await this.createAndDownloadPart(
@@ -163,10 +174,22 @@ class BulkDownloadManager {
                 successfulFileIds.add(fileId);
                 totalCompleted++;
 
-                // Check memory AFTER adding to ZIP (critical check)
+                // Check if we should create a ZIP part after adding this file
                 const memoryAfterAdd = this.memoryMonitor.getMemoryUsagePercent();
-                if (memoryAfterAdd !== null && memoryAfterAdd >= this.MEMORY_SAFETY_LIMIT) {
-                    console.warn(`⚠️ Memory at ${memoryAfterAdd}% after adding ${fileInfo.name} to ZIP, creating part now`);
+                const batchSizeAfterAddMB = this.memoryMonitor.formatBytes(currentBatchSize);
+                
+                // Determine if we should create a ZIP part now
+                const shouldCreatePartAfterAdd = (
+                    // Memory safety (highest priority)
+                    (memoryAfterAdd !== null && memoryAfterAdd >= this.MEMORY_SAFETY_LIMIT) ||
+                    // Minimum part size reached (400 MB)
+                    (currentBatchSize >= this.MIN_PART_SIZE)
+                );
+
+                if (shouldCreatePartAfterAdd) {
+                    const reason = memoryAfterAdd !== null && memoryAfterAdd >= this.MEMORY_SAFETY_LIMIT ? 'memory safety' :
+                                  'minimum size reached (400 MB)';
+                    console.log(`📦 Creating ZIP part ${partNumber} after adding ${fileInfo.name} (${reason}): ${currentBatch.length} files, ${batchSizeAfterAddMB}`);
                     
                     // Create ZIP part immediately
                     await this.createAndDownloadPart(
@@ -203,7 +226,8 @@ class BulkDownloadManager {
 
         // Create final ZIP part with remaining files
         if (currentBatch.length > 0) {
-            console.log(`📦 Creating final ZIP part ${partNumber} with ${currentBatch.length} files`);
+            const finalBatchSizeMB = this.memoryMonitor.formatBytes(currentBatchSize);
+            console.log(`📦 Creating final ZIP part ${partNumber} with ${currentBatch.length} files (${finalBatchSizeMB})`);
             await this.createAndDownloadPart(
                 currentZip,
                 currentBatch,
@@ -287,9 +311,9 @@ class BulkDownloadManager {
         this.MEMORY_SAFETY_LIMIT = safetyLimit;
     }
 
-    // Set maximum files per part
-    setMaxFilesPerPart(maxFiles = 10) {
-        this.MAX_FILES_PER_PART = maxFiles;
+    // Set minimum part size (in MB)
+    setMinPartSize(sizeMB = 400) {
+        this.MIN_PART_SIZE = sizeMB * 1024 * 1024; // Convert MB to bytes
     }
 }
 
