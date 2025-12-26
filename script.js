@@ -139,6 +139,15 @@ const screenWake = new ScreenWakeManager();
 // Initialize device manager (class loaded from js/services/deviceManager.js)
 const deviceManager = new DeviceManager();
 
+// Initialize memory monitor (class loaded from js/services/memoryMonitor.js)
+const memoryMonitor = new MemoryMonitor();
+
+// Initialize ZIP part manager (class loaded from js/services/zipPartManager.js)
+const zipPartManager = new ZipPartManager();
+
+// Initialize bulk download manager (class loaded from js/services/bulkDownloadManager.js)
+const bulkDownloadManager = new BulkDownloadManager(memoryMonitor, zipPartManager);
+
 // State
 let peer = null;
 let connections = new Map(); // Map to store multiple connections
@@ -1402,90 +1411,30 @@ async function downloadAllReceivedFiles() {
     Analytics.track('bulk_download_initiated', {
         file_count: fileItems.length,
         device_type: Analytics.getDeviceType(),
-        download_method: 'zip'
+        download_method: 'zip_parts'
     });
 
     // Show initial progress notification
     showOrUpdateProgressNotification('downloading', 0, fileItems.length, 'downloading');
 
     try {
-        // Check if JSZip is available
-        if (typeof JSZip === 'undefined') {
-            throw new Error('JSZip library not loaded');
-        }
-
-        // Create JSZip instance
-        const zip = new JSZip();
-        let completed = 0;
-        const errors = [];
-        const successfulFileIds = new Set(); // Track successfully added files
-
-        // Fetch all file blobs and add to ZIP
-        for (const item of fileItems) {
-            const fileId = item.getAttribute('data-file-id');
-            if (!fileId) continue;
-
-            // Get file info from Map
-            const fileInfo = receivedFileInfoMap.get(fileId);
-            if (!fileInfo) {
-                console.warn(`File info not found for file ID: ${fileId}`);
-                errors.push(`File ${fileId} not found`);
-                continue;
-            }
-
-            try {
-                // Update progress
-                showOrUpdateProgressNotification('downloading', completed, fileItems.length, 'downloading');
-                
-                // Request blob from peer
-                const blob = await requestBlobFromPeer(fileInfo);
-                
-                // Handle duplicate filenames by adding a number suffix
-                let fileName = fileInfo.name;
-                let counter = 1;
-                while (zip.file(fileName)) {
-                    const nameParts = fileInfo.name.split('.');
-                    const ext = nameParts.length > 1 ? '.' + nameParts.pop() : '';
-                    const baseName = nameParts.join('.');
-                    fileName = `${baseName} (${counter})${ext}`;
-                    counter++;
-                }
-                
-                // Add to ZIP with no compression (STORE method)
-                zip.file(fileName, blob, { compression: 'STORE' });
-                
-                successfulFileIds.add(fileId);
-                completed++;
-                showOrUpdateProgressNotification('downloading', completed, fileItems.length, 'downloading');
-            } catch (error) {
-                console.error(`Error fetching file ${fileInfo.name}:`, error);
-                errors.push(fileInfo.name);
-                // Continue with other files
-            }
-        }
-
-        if (completed === 0) {
-            throw new Error('Failed to fetch any files');
-        }
-
-        // Update progress - creating ZIP
-        showOrUpdateProgressNotification('downloading', completed, fileItems.length, 'downloading');
-
-        // Generate ZIP blob with no compression
-        const zipBlob = await zip.generateAsync({ 
-            type: 'blob',
-            compression: 'STORE', // No compression - maintain file integrity
-            compressionOptions: null
+        // Delegate to BulkDownloadManager
+        const result = await bulkDownloadManager.downloadAllFiles(fileItems, {
+            receivedFileInfoMap: receivedFileInfoMap,
+            requestBlobFromPeer: requestBlobFromPeer,
+            showOrUpdateProgressNotification: showOrUpdateProgressNotification,
+            downloadBlob: downloadBlob,
+            activeBlobURLs: activeBlobURLs
         });
 
-        // Download ZIP file
-        const zipFileName = `files-${Date.now()}.zip`;
-        downloadBlob(zipBlob, zipFileName, null);
+        if (result.successCount === 0) {
+            throw new Error('Failed to fetch any files');
+        }
 
         // Mark all successfully added files as downloaded
         for (const item of fileItems) {
             const fileId = item.getAttribute('data-file-id');
-            if (fileId && successfulFileIds.has(fileId)) {
+            if (fileId && result.successfulFileIds.has(fileId)) {
                 item.classList.add('download-completed');
                 const downloadButton = item.querySelector('.icon-button');
                 if (downloadButton) {
@@ -1497,30 +1446,32 @@ async function downloadAllReceivedFiles() {
         }
 
         // Show success notification
-        if (errors.length === 0) {
-            showNotification(`Successfully created ZIP with ${completed} file(s)`, 'success');
+        const partText = result.partsCreated > 1 ? ` in ${result.partsCreated} part(s)` : '';
+        if (result.errors.length === 0) {
+            showNotification(`Successfully downloaded ${result.successCount} file(s)${partText}`, 'success');
         } else {
-            showNotification(`ZIP created with ${completed} file(s), ${errors.length} failed`, 'warning');
+            showNotification(`Downloaded ${result.successCount} file(s)${partText}, ${result.errors.length} failed`, 'warning');
         }
 
         // Track bulk download completion
         Analytics.track('bulk_download_completed', {
             total_files: fileItems.length,
-            success_count: completed,
-            fail_count: errors.length,
+            success_count: result.successCount,
+            fail_count: result.errors.length,
+            parts_created: result.partsCreated,
             device_type: Analytics.getDeviceType(),
-            download_method: 'zip'
+            download_method: 'zip_parts'
         });
 
     } catch (error) {
-        console.error('Error creating ZIP:', error);
-        showNotification(`Failed to create ZIP: ${error.message}`, 'error');
+        console.error('Error in bulk download:', error);
+        showNotification(`Failed to download files: ${error.message}`, 'error');
         
-        // Track ZIP creation failure
+        // Track bulk download failure
         Analytics.track('bulk_download_failed', {
             error_message: error.message,
             device_type: Analytics.getDeviceType(),
-            download_method: 'zip'
+            download_method: 'zip_parts'
         });
     } finally {
         // Re-enable button
