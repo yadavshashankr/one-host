@@ -847,17 +847,10 @@ input[type="file"] {
     transition: transform 0.2s ease;
 }
 
-.file-group-header[data-expanded="true"] .expand-icon {
-    transform: rotate(0deg);
-}
-
-.file-group-header[data-expanded="false"] .expand-icon {
-    transform: rotate(-90deg);
-}
-
-/* Initial state for chevron_right icon (collapsed) */
+/* Expand icon - no rotation needed, using different icons (expand_more/expand_less) */
 .expand-icon {
     display: inline-block;
+    transition: transform 0.2s ease;
 }
 
 /* File Group Content */

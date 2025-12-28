@@ -2804,10 +2804,10 @@ function createFileGroupHeader(type, peerId = null) {
         info.appendChild(title);
         info.appendChild(summary);
         
-        // Expand icon
+        // Expand icon (down arrow when collapsed, up arrow when expanded)
         const expandIcon = document.createElement('span');
         expandIcon.className = 'material-icons expand-icon';
-        expandIcon.textContent = 'chevron_right';
+        expandIcon.textContent = 'expand_more'; // Down arrow for collapsed state
         expandIcon.setAttribute('translate', 'no');
         
         header.appendChild(icon);
@@ -2824,11 +2824,12 @@ function createFileGroupHeader(type, peerId = null) {
         });
     }
     
-    // Update summary
+    // Update summary - formatFileSize returns HTML, so use innerHTML
     const summary = header.querySelector('.file-group-summary');
     if (summary) {
         const fileText = stats.count === 1 ? 'file' : 'files';
-        summary.textContent = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
+        // formatFileSize returns HTML with span tag, so use innerHTML
+        summary.innerHTML = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
     }
     
     // Update aria-label
@@ -2856,11 +2857,11 @@ function toggleFileGroup(type, peerId = null) {
     header.setAttribute('data-expanded', newExpanded.toString());
     header.setAttribute('aria-expanded', newExpanded.toString());
     
-    // Update expand icon
+    // Update expand icon (down arrow when collapsed, up arrow when expanded)
     const expandIcon = header.querySelector('.expand-icon');
     if (expandIcon) {
-        expandIcon.textContent = newExpanded ? 'expand_more' : 'chevron_right';
-        expandIcon.style.transform = newExpanded ? 'rotate(0deg)' : 'rotate(-90deg)';
+        expandIcon.textContent = newExpanded ? 'expand_less' : 'expand_more';
+        expandIcon.style.transform = 'none'; // No rotation needed, using different icons
     }
     
     // Toggle content visibility
@@ -3014,7 +3015,8 @@ function renderAllFileGroups() {
                     const summary = existingHeader.querySelector('.file-group-summary');
                     if (summary) {
                         const fileText = stats.count === 1 ? 'file' : 'files';
-                        summary.textContent = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
+                        // formatFileSize returns HTML with span tag, so use innerHTML
+                        summary.innerHTML = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
                     }
                 }
             } else {
