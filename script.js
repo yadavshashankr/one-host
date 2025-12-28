@@ -2913,17 +2913,25 @@ function renderFileGroup(type, peerId = null) {
     const content = document.getElementById(contentId);
     if (!content) return;
     
-    // Save current progress state before clearing
+    // Save current progress and completed state before clearing
     const progressState = new Map();
+    const completedFiles = new Set();
     const existingItems = content.querySelectorAll('li.file-item');
     existingItems.forEach(li => {
         const fileId = li.getAttribute('data-file-id');
-        if (fileId && downloadProgressMap.has(fileId)) {
-            const entry = downloadProgressMap.get(fileId);
-            progressState.set(fileId, {
-                percent: entry.percent,
-                disabled: entry.button.disabled
-            });
+        if (fileId) {
+            // Check if file is completed (downloaded)
+            if (li.classList.contains('download-completed')) {
+                completedFiles.add(fileId);
+            }
+            // Check if file is in progress
+            if (downloadProgressMap.has(fileId)) {
+                const entry = downloadProgressMap.get(fileId);
+                progressState.set(fileId, {
+                    percent: entry.percent,
+                    disabled: entry.button.disabled
+                });
+            }
         }
     });
     
@@ -2943,15 +2951,27 @@ function renderFileGroup(type, peerId = null) {
         const li = createFileListItem(fileInfo, type);
         content.appendChild(li);
         
+        const fileId = fileInfo.id;
+        const btn = li.querySelector('button.icon-button[data-file-id="' + fileId + '"]');
+        
+        // Restore completed state if file was downloaded
+        if (completedFiles.has(fileId)) {
+            li.classList.add('download-completed');
+            if (btn) {
+                btn.classList.add('download-completed');
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                btn.title = 'File downloaded - click to open';
+            }
+        }
         // Restore progress state if this file was downloading
-        if (progressState.has(fileInfo.id)) {
-            const state = progressState.get(fileInfo.id);
-            const btn = li.querySelector('button.icon-button[data-file-id="' + fileInfo.id + '"]');
+        else if (progressState.has(fileId)) {
+            const state = progressState.get(fileId);
             if (btn) {
                 btn.disabled = state.disabled;
                 btn.innerHTML = `<span class='download-progress-text' translate="no">${state.percent}%</span>`;
                 // Update downloadProgressMap with new button reference
-                downloadProgressMap.set(fileInfo.id, { button: btn, percent: state.percent });
+                downloadProgressMap.set(fileId, { button: btn, percent: state.percent });
             }
         }
     });
