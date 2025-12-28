@@ -2913,6 +2913,20 @@ function renderFileGroup(type, peerId = null) {
     const content = document.getElementById(contentId);
     if (!content) return;
     
+    // Save current progress state before clearing
+    const progressState = new Map();
+    const existingItems = content.querySelectorAll('li.file-item');
+    existingItems.forEach(li => {
+        const fileId = li.getAttribute('data-file-id');
+        if (fileId && downloadProgressMap.has(fileId)) {
+            const entry = downloadProgressMap.get(fileId);
+            progressState.set(fileId, {
+                percent: entry.percent,
+                disabled: entry.button.disabled
+            });
+        }
+    });
+    
     // Clear existing content
     content.innerHTML = '';
     
@@ -2928,6 +2942,18 @@ function renderFileGroup(type, peerId = null) {
     files.forEach(fileInfo => {
         const li = createFileListItem(fileInfo, type);
         content.appendChild(li);
+        
+        // Restore progress state if this file was downloading
+        if (progressState.has(fileInfo.id)) {
+            const state = progressState.get(fileInfo.id);
+            const btn = li.querySelector('button.icon-button[data-file-id="' + fileInfo.id + '"]');
+            if (btn) {
+                btn.disabled = state.disabled;
+                btn.innerHTML = `<span class='download-progress-text' translate="no">${state.percent}%</span>`;
+                // Update downloadProgressMap with new button reference
+                downloadProgressMap.set(fileInfo.id, { button: btn, percent: state.percent });
+            }
+        }
     });
 }
 
