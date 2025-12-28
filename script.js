@@ -1622,19 +1622,25 @@ function updateBulkDownloadButtonState() {
         undownloadedFiles += files.filter(f => {
             // Check if file is marked as downloaded
             const fileId = f.id;
+            // Check tracking Sets first (most reliable)
+            if (completedFileBlobURLs.has(fileId) || bulkDownloadedFiles.has(fileId)) {
+                return false; // File is downloaded
+            }
+            // Check DOM state
             const contentContainers = document.querySelectorAll(`.file-group-content[data-group-type="received"]`);
             for (const container of contentContainers) {
                 const fileItem = container.querySelector(`[data-file-id="${fileId}"]`);
                 if (fileItem && !fileItem.classList.contains('download-completed')) {
-                    return true;
+                    return true; // Not downloaded
                 }
             }
             // Also check the old list structure for backward compatibility
             const oldItem = elements.receivedFilesList.querySelector(`[data-file-id="${fileId}"]`);
             if (oldItem && !oldItem.classList.contains('download-completed')) {
-                return true;
+                return true; // Not downloaded
             }
-            return false;
+            // If not found in DOM and not in tracking Sets, assume not downloaded
+            return true;
         }).length;
     }
     
