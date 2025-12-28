@@ -190,6 +190,9 @@ const activeBlobURLs = new Set(); // Set to track all created blob URLs
 // Store blob URLs for completed files so they can be opened after re-rendering
 const completedFileBlobURLs = new Map(); // fileId -> blobUrl
 
+// Track files that were downloaded via bulk download (in ZIP, can't open individually)
+const bulkDownloadedFiles = new Set(); // fileId -> true
+
 // Add recent peers tracking
 let recentPeers = [];
 const MAX_RECENT_PEERS = 5;
@@ -1443,9 +1446,11 @@ async function downloadAllReceivedFiles() {
         // Check if file is marked as completed in DOM
         const listItem = document.querySelector(`li.file-item[data-file-id="${fileId}"]`);
         const isCompletedInDOM = listItem && listItem.classList.contains('download-completed');
-        // Check if file has a blob URL stored (completed)
+        // Check if file has a blob URL stored (individually downloaded)
         const hasBlobURL = completedFileBlobURLs.has(fileId);
-        return !isCompletedInDOM && !hasBlobURL;
+        // Check if file was bulk downloaded (in ZIP)
+        const wasBulkDownloaded = bulkDownloadedFiles.has(fileId);
+        return !isCompletedInDOM && !hasBlobURL && !wasBulkDownloaded;
     });
     
     if (undownloadedFiles.length === 0) {
@@ -1526,7 +1531,13 @@ async function downloadAllReceivedFiles() {
         }
 
         // Mark all successfully added files as downloaded
-        // Update both DOM elements and re-render groups if needed
+        // Track them in bulkDownloadedFiles Set for state persistence
+        for (const fileId of result.successfulFileIds) {
+            // Track as bulk downloaded
+            bulkDownloadedFiles.add(fileId);
+        }
+        
+        // Update DOM elements for all successful files
         for (const item of fileItems) {
             const fileId = item.getAttribute('data-file-id');
             if (fileId && result.successfulFileIds.has(fileId)) {
@@ -1538,22 +1549,24 @@ async function downloadAllReceivedFiles() {
                     downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                     downloadButton.title = 'File included in ZIP';
                 }
-                
-                // Also mark in any other DOM elements with this fileId (in case file is in multiple groups)
-                const allItems = document.querySelectorAll(`li.file-item[data-file-id="${fileId}"]`);
-                allItems.forEach(li => {
-                    li.classList.add('download-completed');
-                    const btn = li.querySelector('.icon-button');
-                    if (btn) {
-                        btn.classList.add('download-completed');
-                        btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-                        btn.title = 'File included in ZIP';
-                    }
-                });
             }
         }
         
-        // Re-render all groups to update UI state
+        // Update all DOM elements with these fileIds (in case files are in multiple groups or collapsed)
+        for (const fileId of result.successfulFileIds) {
+            const allItems = document.querySelectorAll(`li.file-item[data-file-id="${fileId}"]`);
+            allItems.forEach(li => {
+                li.classList.add('download-completed');
+                const btn = li.querySelector('.icon-button');
+                if (btn) {
+                    btn.classList.add('download-completed');
+                    btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                    btn.title = 'File included in ZIP';
+                }
+            });
+        }
+        
+        // Re-render all groups to update UI state (this will preserve the completed state)
         renderAllFileGroups();
 
         // Show success notification
@@ -2982,7 +2995,10 @@ function renderFileGroup(type, peerId = null) {
         const fileId = li.getAttribute('data-file-id');
         if (fileId) {
             // Check if file is completed (downloaded)
-            if (li.classList.contains('download-completed')) {
+            // Check both DOM state and tracking Sets
+            if (li.classList.contains('download-completed') || 
+                completedFileBlobURLs.has(fileId) || 
+                bulkDownloadedFiles.has(fileId)) {
                 completedFiles.add(fileId);
             }
             // Check if file is in progress
@@ -2995,6 +3011,15 @@ function renderFileGroup(type, peerId = null) {
             }
         }
     });
+    
+    // Also check tracking Sets for files that might not be in DOM yet
+    for (const fileInfo of files) {
+        const fileId = fileInfo.id;
+        if (!completedFiles.has(fileId) && 
+            (completedFileBlobURLs.has(fileId) || bulkDownloadedFiles.has(fileId))) {
+            completedFiles.add(fileId);
+        }
+    }
     
     // Clear existing content
     content.innerHTML = '';
@@ -3021,32 +3046,44 @@ function renderFileGroup(type, peerId = null) {
             if (btn) {
                 btn.classList.add('download-completed');
                 btn.disabled = false;
-                btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-                btn.title = 'File downloaded - click to open';
                 
-                // Restore the open handler with stored blob URL
-                const blobUrl = completedFileBlobURLs.get(fileId);
-                if (blobUrl) {
+                // Check if file was bulk downloaded (in ZIP) or individually downloaded
+                if (bulkDownloadedFiles.has(fileId)) {
+                    // File was in bulk download ZIP - show appropriate message
+                    btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                    btn.title = 'File included in ZIP';
                     btn.onclick = () => {
-                        // Track file open click
-                        Analytics.track('file_open_clicked', {
-                            file_size: fileInfo.size,
-                            file_type: Analytics.getFileExtension(fileInfo.name),
-                            device_type: Analytics.getDeviceType()
-                        });
-                        window.open(blobUrl, '_blank');
+                        showNotification('This file was downloaded in a ZIP archive. Check your downloads folder.', 'info');
                     };
                 } else {
-                    // If blob URL is not available, fall back to download
-                    console.warn('Blob URL not found for completed file:', fileId);
-                    btn.onclick = async () => {
-                        if (type === 'sent' && sentFileBlobs.has(fileInfo.id)) {
-                            const blob = sentFileBlobs.get(fileInfo.id);
-                            downloadBlob(blob, fileInfo.name, fileInfo.id);
-                        } else {
-                            await requestAndDownloadBlob(fileInfo);
-                        }
-                    };
+                    // File was individually downloaded - can open from blob URL
+                    btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                    btn.title = 'File downloaded - click to open';
+                    
+                    // Restore the open handler with stored blob URL
+                    const blobUrl = completedFileBlobURLs.get(fileId);
+                    if (blobUrl) {
+                        btn.onclick = () => {
+                            // Track file open click
+                            Analytics.track('file_open_clicked', {
+                                file_size: fileInfo.size,
+                                file_type: Analytics.getFileExtension(fileInfo.name),
+                                device_type: Analytics.getDeviceType()
+                            });
+                            window.open(blobUrl, '_blank');
+                        };
+                    } else {
+                        // If blob URL is not available, fall back to download
+                        console.warn('Blob URL not found for completed file:', fileId);
+                        btn.onclick = async () => {
+                            if (type === 'sent' && sentFileBlobs.has(fileInfo.id)) {
+                                const blob = sentFileBlobs.get(fileInfo.id);
+                                downloadBlob(blob, fileInfo.name, fileInfo.id);
+                            } else {
+                                await requestAndDownloadBlob(fileInfo);
+                            }
+                        };
+                    }
                 }
             }
         }
