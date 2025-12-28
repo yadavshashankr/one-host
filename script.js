@@ -222,13 +222,31 @@ updateFilesList = function(listElement, fileInfo, type) {
 const originalRequestAndDownloadBlob = requestAndDownloadBlob;
 requestAndDownloadBlob = async function(fileInfo) {
     const fileId = fileInfo.id;
-    const btn = document.querySelector(`button.icon-button[data-file-id="${fileId}"]`);
+    // Find button in both grouped content and old list structure
+    let btn = document.querySelector(`button.icon-button[data-file-id="${fileId}"]`);
+    if (!btn) {
+        // Also try finding by the list item's data-file-id
+        const listItem = document.querySelector(`li.file-item[data-file-id="${fileId}"]`);
+        if (listItem) {
+            btn = listItem.querySelector('button.icon-button');
+        }
+    }
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<span translate="no">0%</span>';
+        btn.innerHTML = '<span class="download-progress-text" translate="no">0%</span>';
         downloadProgressMap.set(fileId, { button: btn, percent: 0 });
     }
-    await originalRequestAndDownloadBlob(fileInfo);
+    try {
+        await originalRequestAndDownloadBlob(fileInfo);
+    } catch (error) {
+        // Re-enable button on error
+        if (btn && downloadProgressMap.has(fileId)) {
+            btn.disabled = false;
+            btn.innerHTML = '<span class="material-icons" translate="no">download</span>';
+            downloadProgressMap.delete(fileId);
+        }
+        throw error;
+    }
 };
 
 // Patch updateProgress to update button percentage for downloads
@@ -2952,6 +2970,7 @@ function createFileListItem(fileInfo, type) {
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'icon-button';
     downloadBtn.title = 'Download file';
+    downloadBtn.setAttribute('data-file-id', fileInfo.id); // Required for progress tracking
     downloadBtn.innerHTML = '<span class="material-icons" translate="no">download</span>';
     downloadBtn.onclick = async () => {
         try {
@@ -2965,11 +2984,12 @@ function createFileListItem(fileInfo, type) {
             });
             
             if (type === 'sent' && sentFileBlobs.has(fileInfo.id)) {
-                // For sent files, we have the blob locally
+                // For sent files, we have the blob locally - download immediately (no progress needed for local files)
                 const blob = sentFileBlobs.get(fileInfo.id);
                 downloadBlob(blob, fileInfo.name, fileInfo.id);
             } else {
                 // For received files, request the blob from the original sender
+                // This will show progress via the patched requestAndDownloadBlob function
                 await requestAndDownloadBlob(fileInfo);
             }
         } catch (error) {
