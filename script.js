@@ -187,6 +187,9 @@ const sentFileBlobs = new Map(); // Map to store blobs of sent files
 // Track all blob URLs for cleanup
 const activeBlobURLs = new Set(); // Set to track all created blob URLs
 
+// Store blob URLs for completed files so they can be opened after re-rendering
+const completedFileBlobURLs = new Map(); // fileId -> blobUrl
+
 // Add recent peers tracking
 let recentPeers = [];
 const MAX_RECENT_PEERS = 5;
@@ -1104,7 +1107,14 @@ async function handleFileComplete(data) {
                     // Store the blob URL for opening the file
                     const blobUrl = URL.createObjectURL(blob);
                     activeBlobURLs.add(blobUrl); // Track for cleanup
+                    completedFileBlobURLs.set(data.fileId, blobUrl); // Store for re-rendering
                     downloadButton.onclick = () => {
+                        // Track file open click
+                        Analytics.track('file_open_clicked', {
+                            file_size: blob.size,
+                            file_type: Analytics.getFileExtension(fileData.fileName),
+                            device_type: Analytics.getDeviceType()
+                        });
                         window.open(blobUrl, '_blank');
                     };
                 }
@@ -2962,6 +2972,31 @@ function renderFileGroup(type, peerId = null) {
                 btn.disabled = false;
                 btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                 btn.title = 'File downloaded - click to open';
+                
+                // Restore the open handler with stored blob URL
+                const blobUrl = completedFileBlobURLs.get(fileId);
+                if (blobUrl) {
+                    btn.onclick = () => {
+                        // Track file open click
+                        Analytics.track('file_open_clicked', {
+                            file_size: fileInfo.size,
+                            file_type: Analytics.getFileExtension(fileInfo.name),
+                            device_type: Analytics.getDeviceType()
+                        });
+                        window.open(blobUrl, '_blank');
+                    };
+                } else {
+                    // If blob URL is not available, fall back to download
+                    console.warn('Blob URL not found for completed file:', fileId);
+                    btn.onclick = async () => {
+                        if (type === 'sent' && sentFileBlobs.has(fileInfo.id)) {
+                            const blob = sentFileBlobs.get(fileInfo.id);
+                            downloadBlob(blob, fileInfo.name, fileInfo.id);
+                        } else {
+                            await requestAndDownloadBlob(fileInfo);
+                        }
+                    };
+                }
             }
         }
         // Restore progress state if this file was downloading
@@ -3477,6 +3512,7 @@ function downloadBlob(blob, fileName, fileId) {
                 // Store the blob URL for opening the file
                 const openUrl = URL.createObjectURL(blob);
                 activeBlobURLs.add(openUrl); // Track for cleanup
+                completedFileBlobURLs.set(fileId, openUrl); // Store for re-rendering
                 downloadButton.onclick = () => {
                     // Track file open click
                     Analytics.track('file_open_clicked', {
