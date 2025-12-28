@@ -1560,14 +1560,53 @@ async function downloadAllReceivedFiles() {
                 const btn = li.querySelector('.icon-button');
                 if (btn) {
                     btn.classList.add('download-completed');
+                    btn.disabled = false;
                     btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                     btn.title = 'File included in ZIP';
+                    // Set onclick to show message (files in ZIP can't be opened individually)
+                    btn.onclick = () => {
+                        showNotification('This file was downloaded in a ZIP archive. Check your downloads folder.', 'info');
+                    };
                 }
             });
         }
         
-        // Re-render all groups to update UI state (this will preserve the completed state)
+        // Expand all received file groups temporarily to update their UI, then collapse them back
+        // This ensures all files show as completed even if groups were collapsed
+        const allReceivedHeaders = document.querySelectorAll('.file-group-header[data-group-type="received"]');
+        const expandedHeaders = [];
+        
+        // Expand all collapsed groups
+        allReceivedHeaders.forEach(header => {
+            const isExpanded = header.getAttribute('data-expanded') === 'true';
+            if (!isExpanded) {
+                const peerId = header.getAttribute('data-group-key');
+                toggleFileGroup('received', peerId);
+                expandedHeaders.push(peerId);
+            }
+        });
+        
+        // Re-render all groups to update UI state
         renderAllFileGroups();
+        
+        // Re-render all expanded groups to update file items
+        allReceivedHeaders.forEach(header => {
+            const peerId = header.getAttribute('data-group-key');
+            if (header.getAttribute('data-expanded') === 'true') {
+                renderFileGroup('received', peerId);
+            }
+        });
+        
+        // Collapse groups that were originally collapsed
+        expandedHeaders.forEach(peerId => {
+            const header = document.getElementById(`received-files-header-${peerId}`);
+            if (header && header.getAttribute('data-expanded') === 'true') {
+                toggleFileGroup('received', peerId);
+            }
+        });
+        
+        // Update bulk download button state
+        updateBulkDownloadButtonState();
 
         // Show success notification
         const partText = result.partsCreated > 1 ? ` in ${result.partsCreated} part(s)` : '';
@@ -1622,24 +1661,12 @@ function updateBulkDownloadButtonState() {
         undownloadedFiles += files.filter(f => {
             // Check if file is marked as downloaded
             const fileId = f.id;
-            // Check tracking Sets first (most reliable)
+            // Check tracking Sets (most reliable source of truth)
+            // If file is in either tracking Set, it's downloaded
             if (completedFileBlobURLs.has(fileId) || bulkDownloadedFiles.has(fileId)) {
                 return false; // File is downloaded
             }
-            // Check DOM state
-            const contentContainers = document.querySelectorAll(`.file-group-content[data-group-type="received"]`);
-            for (const container of contentContainers) {
-                const fileItem = container.querySelector(`[data-file-id="${fileId}"]`);
-                if (fileItem && !fileItem.classList.contains('download-completed')) {
-                    return true; // Not downloaded
-                }
-            }
-            // Also check the old list structure for backward compatibility
-            const oldItem = elements.receivedFilesList.querySelector(`[data-file-id="${fileId}"]`);
-            if (oldItem && !oldItem.classList.contains('download-completed')) {
-                return true; // Not downloaded
-            }
-            // If not found in DOM and not in tracking Sets, assume not downloaded
+            // If not in tracking Sets, file is not downloaded
             return true;
         }).length;
     }
@@ -1647,11 +1674,14 @@ function updateBulkDownloadButtonState() {
     // Hide button if less than 2 files, show if 2 or more
     if (totalFiles < 2) {
         elements.bulkDownloadReceived.style.display = 'none';
+        elements.bulkDownloadReceived.disabled = true;
     } else {
         elements.bulkDownloadReceived.style.display = 'flex';
-        // Enable button if there are files to download
+        // Enable button if there are files to download (disable if all files are downloaded)
         elements.bulkDownloadReceived.disabled = undownloadedFiles === 0;
     }
+    
+    console.log(`📊 Bulk download: ${totalFiles} total, ${undownloadedFiles} undownloaded, button ${elements.bulkDownloadReceived.disabled ? 'disabled' : 'enabled'}`);
 }
 
 // Handle forwarded blob request (host only)
@@ -2993,18 +3023,33 @@ function renderFileGroup(type, peerId = null) {
     const content = document.getElementById(contentId);
     if (!content) return;
     
+    // Get files for this group first (needed for tracking Set checks)
+    let files = [];
+    if (type === 'sent') {
+        files = fileGroups.sent.get('sent') || [];
+    } else {
+        files = fileGroups.received.get(peerId) || [];
+    }
+    
     // Save current progress and completed state before clearing
     const progressState = new Map();
     const completedFiles = new Set();
+    
+    // First, check tracking Sets for all files in this group (most reliable source)
+    for (const fileInfo of files) {
+        const fileId = fileInfo.id;
+        if (completedFileBlobURLs.has(fileId) || bulkDownloadedFiles.has(fileId)) {
+            completedFiles.add(fileId);
+        }
+    }
+    
+    // Then check DOM state for files that might be in progress or have different state
     const existingItems = content.querySelectorAll('li.file-item');
     existingItems.forEach(li => {
         const fileId = li.getAttribute('data-file-id');
         if (fileId) {
-            // Check if file is completed (downloaded)
-            // Check both DOM state and tracking Sets
-            if (li.classList.contains('download-completed') || 
-                completedFileBlobURLs.has(fileId) || 
-                bulkDownloadedFiles.has(fileId)) {
+            // Check if file is completed (downloaded) - add to Set if not already there
+            if (li.classList.contains('download-completed')) {
                 completedFiles.add(fileId);
             }
             // Check if file is in progress
@@ -3018,25 +3063,8 @@ function renderFileGroup(type, peerId = null) {
         }
     });
     
-    // Also check tracking Sets for files that might not be in DOM yet
-    for (const fileInfo of files) {
-        const fileId = fileInfo.id;
-        if (!completedFiles.has(fileId) && 
-            (completedFileBlobURLs.has(fileId) || bulkDownloadedFiles.has(fileId))) {
-            completedFiles.add(fileId);
-        }
-    }
-    
     // Clear existing content
     content.innerHTML = '';
-    
-    // Get files for this group
-    let files = [];
-    if (type === 'sent') {
-        files = fileGroups.sent.get('sent') || [];
-    } else {
-        files = fileGroups.received.get(peerId) || [];
-    }
     
     // Render each file
     files.forEach(fileInfo => {
