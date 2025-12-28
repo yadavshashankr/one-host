@@ -1431,36 +1431,70 @@ async function downloadAllReceivedFiles() {
         return;
     }
 
-    // Get all file items from all group content containers that are not already downloaded
-    const allContentContainers = document.querySelectorAll('.file-group-content[data-group-type="received"]');
-    let fileItems = [];
+    // Collect all files from all peer groups (regardless of expanded/collapsed state)
+    const allFiles = [];
+    for (const [peerId, files] of fileGroups.received.entries()) {
+        allFiles.push(...files);
+    }
     
-    // Collect from group content containers
-    allContentContainers.forEach(container => {
-        const items = container.querySelectorAll('li.file-item:not(.download-completed)');
-        fileItems.push(...Array.from(items));
+    // Filter out already downloaded files
+    const undownloadedFiles = allFiles.filter(fileInfo => {
+        const fileId = fileInfo.id;
+        // Check if file is marked as completed in DOM
+        const listItem = document.querySelector(`li.file-item[data-file-id="${fileId}"]`);
+        const isCompletedInDOM = listItem && listItem.classList.contains('download-completed');
+        // Check if file has a blob URL stored (completed)
+        const hasBlobURL = completedFileBlobURLs.has(fileId);
+        return !isCompletedInDOM && !hasBlobURL;
     });
     
-    // Also check the old list structure for backward compatibility
-    const oldItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
-    fileItems.push(...Array.from(oldItems));
+    if (undownloadedFiles.length === 0) {
+        showNotification('All files already downloaded', 'info');
+        return;
+    }
     
-    // Remove duplicates based on data-file-id
-    const uniqueItems = [];
+    // Create file items for the bulk download manager
+    // The bulk download manager needs DOM elements with data-file-id attributes
+    // We'll create temporary items for all undownloaded files
+    const fileItems = [];
     const seenIds = new Set();
-    fileItems.forEach(item => {
-        const fileId = item.getAttribute('data-file-id');
-        if (fileId && !seenIds.has(fileId)) {
-            seenIds.add(fileId);
-            uniqueItems.push(item);
+    
+    // First, try to find existing DOM elements (from expanded groups)
+    const allContentContainers = document.querySelectorAll('.file-group-content[data-group-type="received"]');
+    allContentContainers.forEach(container => {
+        const items = container.querySelectorAll('li.file-item');
+        items.forEach(item => {
+            const fileId = item.getAttribute('data-file-id');
+            if (fileId && !seenIds.has(fileId) && undownloadedFiles.some(f => f.id === fileId)) {
+                seenIds.add(fileId);
+                fileItems.push(item);
+            }
+        });
+    });
+    
+    // For files that don't have DOM elements (from collapsed groups), create temporary items
+    undownloadedFiles.forEach(fileInfo => {
+        if (!seenIds.has(fileInfo.id)) {
+            // Create a temporary list item for the bulk download manager
+            // This is needed because the manager expects DOM elements with data-file-id
+            const tempItem = document.createElement('li');
+            tempItem.className = 'file-item';
+            tempItem.setAttribute('data-file-id', fileInfo.id);
+            // Ensure fileInfo is in receivedFileInfoMap (it should be, but double-check)
+            if (!receivedFileInfoMap.has(fileInfo.id)) {
+                receivedFileInfoMap.set(fileInfo.id, fileInfo);
+            }
+            fileItems.push(tempItem);
+            seenIds.add(fileInfo.id);
         }
     });
-    fileItems = uniqueItems;
     
     if (fileItems.length === 0) {
         showNotification('All files already downloaded', 'info');
         return;
     }
+    
+    console.log(`📦 Bulk download: Found ${fileItems.length} files from ${fileGroups.received.size} peer(s)`);
 
     // Disable button during download
     if (elements.bulkDownloadReceived) {
@@ -1492,9 +1526,11 @@ async function downloadAllReceivedFiles() {
         }
 
         // Mark all successfully added files as downloaded
+        // Update both DOM elements and re-render groups if needed
         for (const item of fileItems) {
             const fileId = item.getAttribute('data-file-id');
             if (fileId && result.successfulFileIds.has(fileId)) {
+                // Mark in DOM if element exists
                 item.classList.add('download-completed');
                 const downloadButton = item.querySelector('.icon-button');
                 if (downloadButton) {
@@ -1502,8 +1538,23 @@ async function downloadAllReceivedFiles() {
                     downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                     downloadButton.title = 'File included in ZIP';
                 }
+                
+                // Also mark in any other DOM elements with this fileId (in case file is in multiple groups)
+                const allItems = document.querySelectorAll(`li.file-item[data-file-id="${fileId}"]`);
+                allItems.forEach(li => {
+                    li.classList.add('download-completed');
+                    const btn = li.querySelector('.icon-button');
+                    if (btn) {
+                        btn.classList.add('download-completed');
+                        btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                        btn.title = 'File included in ZIP';
+                    }
+                });
             }
         }
+        
+        // Re-render all groups to update UI state
+        renderAllFileGroups();
 
         // Show success notification
         const partText = result.partsCreated > 1 ? ` in ${result.partsCreated} part(s)` : '';
