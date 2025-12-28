@@ -172,6 +172,15 @@ const fileHistory = {
 // Map to store actual file info objects for received files (for ZIP download)
 const receivedFileInfoMap = new Map(); // fileId -> fileInfo
 
+// Map to store file info objects for sent files
+const sentFileInfoMap = new Map(); // fileId -> fileInfo
+
+// File grouping: Store files by type and peer
+const fileGroups = {
+    sent: new Map(), // All sent files in one group (key: 'sent')
+    received: new Map() // Received files grouped by peer (key: peerId)
+};
+
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
 
@@ -1394,8 +1403,31 @@ async function downloadAllReceivedFiles() {
         return;
     }
 
-    // Get all file items that are not already downloaded
-    const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
+    // Get all file items from all group content containers that are not already downloaded
+    const allContentContainers = document.querySelectorAll('.file-group-content[data-group-type="received"]');
+    let fileItems = [];
+    
+    // Collect from group content containers
+    allContentContainers.forEach(container => {
+        const items = container.querySelectorAll('li.file-item:not(.download-completed)');
+        fileItems.push(...Array.from(items));
+    });
+    
+    // Also check the old list structure for backward compatibility
+    const oldItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
+    fileItems.push(...Array.from(oldItems));
+    
+    // Remove duplicates based on data-file-id
+    const uniqueItems = [];
+    const seenIds = new Set();
+    fileItems.forEach(item => {
+        const fileId = item.getAttribute('data-file-id');
+        if (fileId && !seenIds.has(fileId)) {
+            seenIds.add(fileId);
+            uniqueItems.push(item);
+        }
+    });
+    fileItems = uniqueItems;
     
     if (fileItems.length === 0) {
         showNotification('All files already downloaded', 'info');
@@ -1489,16 +1521,38 @@ function updateBulkDownloadButtonState() {
         return;
     }
 
-    const receivedList = elements.receivedFilesList;
-    const fileItems = receivedList.querySelectorAll('li.file-item:not(.download-completed)');
+    // Count all received files (from all groups)
+    let totalFiles = 0;
+    let undownloadedFiles = 0;
+    
+    for (const files of fileGroups.received.values()) {
+        totalFiles += files.length;
+        undownloadedFiles += files.filter(f => {
+            // Check if file is marked as downloaded
+            const fileId = f.id;
+            const contentContainers = document.querySelectorAll(`.file-group-content[data-group-type="received"]`);
+            for (const container of contentContainers) {
+                const fileItem = container.querySelector(`[data-file-id="${fileId}"]`);
+                if (fileItem && !fileItem.classList.contains('download-completed')) {
+                    return true;
+                }
+            }
+            // Also check the old list structure for backward compatibility
+            const oldItem = elements.receivedFilesList.querySelector(`[data-file-id="${fileId}"]`);
+            if (oldItem && !oldItem.classList.contains('download-completed')) {
+                return true;
+            }
+            return false;
+        }).length;
+    }
     
     // Hide button if less than 2 files, show if 2 or more
-    if (fileItems.length < 2) {
+    if (totalFiles < 2) {
         elements.bulkDownloadReceived.style.display = 'none';
     } else {
         elements.bulkDownloadReceived.style.display = 'flex';
         // Enable button if there are files to download
-        elements.bulkDownloadReceived.disabled = fileItems.length === 0;
+        elements.bulkDownloadReceived.disabled = undownloadedFiles === 0;
     }
 }
 
@@ -1547,23 +1601,10 @@ function addFileToHistory(fileInfo, type) {
     // Add to the correct history set
     fileHistory[actualType].add(fileId);
     
-    // Remove existing entries from UI if any
-    const sentList = elements.sentFilesList;
-    const receivedList = elements.receivedFilesList;
+    // Remove file from old group if it exists
+    removeFileFromGroup(fileId, actualType === 'sent' ? 'sent' : 'received');
     
-    // Remove from sent list if exists
-    const existingInSent = sentList.querySelector(`[data-file-id="${fileId}"]`);
-    if (existingInSent) {
-        existingInSent.remove();
-    }
-    
-    // Remove from received list if exists
-    const existingInReceived = receivedList.querySelector(`[data-file-id="${fileId}"]`);
-    if (existingInReceived) {
-        existingInReceived.remove();
-    }
-    
-    // Update UI with the correct list
+    // Update UI with the correct list (this will add to group and render)
     const listElement = actualType === 'sent' ? elements.sentFilesList : elements.receivedFilesList;
     updateFilesList(listElement, fileInfo, actualType);
 
@@ -2643,17 +2684,236 @@ function updateConnectionStatus(status, message) {
     updateAutoModeToggleState(); // Update auto mode toggle state based on connections
 }
 
-// Update files list display
-function updateFilesList(listElement, fileInfo, type) {
-    console.log('Updating files list:', { type, fileInfo });
-    
-    // Check if file already exists in this list
-    const existingFile = listElement.querySelector(`[data-file-id="${fileInfo.id}"]`);
-    if (existingFile) {
-        console.log('File already exists in list, updating...');
-        existingFile.remove();
-    }
+// ============================================================================
+// FILE GROUPING AND COLLAPSIBLE HEADERS
+// ============================================================================
 
+// Add file to appropriate group
+function addFileToGroup(fileInfo, type) {
+    if (type === 'sent') {
+        // All sent files go into one group
+        if (!fileGroups.sent.has('sent')) {
+            fileGroups.sent.set('sent', []);
+        }
+        const sentFiles = fileGroups.sent.get('sent');
+        // Remove if exists to avoid duplicates
+        const existingIndex = sentFiles.findIndex(f => f.id === fileInfo.id);
+        if (existingIndex !== -1) {
+            sentFiles.splice(existingIndex, 1);
+        }
+        sentFiles.unshift(fileInfo); // Add to beginning (newest first)
+        sentFileInfoMap.set(fileInfo.id, fileInfo);
+    } else {
+        // Received files grouped by peer
+        const peerId = fileInfo.sharedBy || 'unknown';
+        if (!fileGroups.received.has(peerId)) {
+            fileGroups.received.set(peerId, []);
+        }
+        const peerFiles = fileGroups.received.get(peerId);
+        // Remove if exists to avoid duplicates
+        const existingIndex = peerFiles.findIndex(f => f.id === fileInfo.id);
+        if (existingIndex !== -1) {
+            peerFiles.splice(existingIndex, 1);
+        }
+        peerFiles.unshift(fileInfo); // Add to beginning (newest first)
+        receivedFileInfoMap.set(fileInfo.id, fileInfo);
+    }
+}
+
+// Remove file from group
+function removeFileFromGroup(fileId, type) {
+    if (type === 'sent') {
+        const sentFiles = fileGroups.sent.get('sent');
+        if (sentFiles) {
+            const index = sentFiles.findIndex(f => f.id === fileId);
+            if (index !== -1) {
+                sentFiles.splice(index, 1);
+            }
+            if (sentFiles.length === 0) {
+                fileGroups.sent.delete('sent');
+            }
+        }
+        sentFileInfoMap.delete(fileId);
+    } else {
+        // Find and remove from received groups
+        for (const [peerId, files] of fileGroups.received.entries()) {
+            const index = files.findIndex(f => f.id === fileId);
+            if (index !== -1) {
+                files.splice(index, 1);
+                if (files.length === 0) {
+                    fileGroups.received.delete(peerId);
+                }
+                break;
+            }
+        }
+        receivedFileInfoMap.delete(fileId);
+    }
+}
+
+// Calculate group statistics
+function getGroupStats(type, peerId = null) {
+    let files = [];
+    if (type === 'sent') {
+        files = fileGroups.sent.get('sent') || [];
+    } else {
+        files = peerId ? (fileGroups.received.get(peerId) || []) : [];
+    }
+    
+    const count = files.length;
+    const totalSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    
+    return { count, totalSize, files };
+}
+
+// Create file group header
+function createFileGroupHeader(type, peerId = null) {
+    const stats = getGroupStats(type, peerId);
+    const headerId = type === 'sent' ? 'sent-files-header' : `received-files-header-${peerId}`;
+    const groupKey = type === 'sent' ? 'sent' : peerId;
+    
+    // Check if header already exists
+    let header = document.getElementById(headerId);
+    if (!header) {
+        header = document.createElement('div');
+        header.className = 'file-group-header';
+        header.id = headerId;
+        header.setAttribute('data-group-type', type);
+        header.setAttribute('data-group-key', groupKey);
+        header.setAttribute('data-expanded', 'false');
+        header.setAttribute('role', 'button');
+        header.setAttribute('tabindex', '0');
+        header.setAttribute('aria-expanded', 'false');
+        
+        // Icon
+        const icon = document.createElement('span');
+        icon.className = 'material-icons file-group-icon';
+        icon.textContent = 'folder';
+        icon.setAttribute('translate', 'no');
+        
+        // Info container
+        const info = document.createElement('div');
+        info.className = 'file-group-info';
+        
+        const title = document.createElement('span');
+        title.className = 'file-group-title';
+        title.textContent = type === 'sent' ? 'Sent Files' : `Peer: ${peerId || 'Unknown'}`;
+        
+        const summary = document.createElement('span');
+        summary.className = 'file-group-summary';
+        
+        info.appendChild(title);
+        info.appendChild(summary);
+        
+        // Expand icon
+        const expandIcon = document.createElement('span');
+        expandIcon.className = 'material-icons expand-icon';
+        expandIcon.textContent = 'chevron_right';
+        expandIcon.setAttribute('translate', 'no');
+        
+        header.appendChild(icon);
+        header.appendChild(info);
+        header.appendChild(expandIcon);
+        
+        // Add click handler
+        header.addEventListener('click', () => toggleFileGroup(type, peerId));
+        header.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleFileGroup(type, peerId);
+            }
+        });
+    }
+    
+    // Update summary
+    const summary = header.querySelector('.file-group-summary');
+    if (summary) {
+        const fileText = stats.count === 1 ? 'file' : 'files';
+        summary.textContent = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
+    }
+    
+    // Update aria-label
+    const ariaLabel = type === 'sent' 
+        ? `Sent Files group, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`
+        : `Files from peer ${peerId}, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`;
+    header.setAttribute('aria-label', ariaLabel);
+    
+    return header;
+}
+
+// Toggle file group expand/collapse
+function toggleFileGroup(type, peerId = null) {
+    const groupKey = type === 'sent' ? 'sent' : peerId;
+    const headerId = type === 'sent' ? 'sent-files-header' : `received-files-header-${peerId}`;
+    const contentId = type === 'sent' ? 'sent-files-group-content' : `received-files-group-content-${peerId}`;
+    
+    const header = document.getElementById(headerId);
+    if (!header) return;
+    
+    const isExpanded = header.getAttribute('data-expanded') === 'true';
+    const newExpanded = !isExpanded;
+    
+    // Update header state
+    header.setAttribute('data-expanded', newExpanded.toString());
+    header.setAttribute('aria-expanded', newExpanded.toString());
+    
+    // Update expand icon
+    const expandIcon = header.querySelector('.expand-icon');
+    if (expandIcon) {
+        expandIcon.textContent = newExpanded ? 'expand_more' : 'chevron_right';
+        expandIcon.style.transform = newExpanded ? 'rotate(0deg)' : 'rotate(-90deg)';
+    }
+    
+    // Toggle content visibility
+    let content = document.getElementById(contentId);
+    if (!content) {
+        // Create content container if it doesn't exist
+        content = document.createElement('ul');
+        content.className = 'files-list file-group-content';
+        content.id = contentId;
+        content.setAttribute('data-group-type', type);
+        content.setAttribute('data-group-key', groupKey);
+        
+        // Insert after header
+        header.parentNode.insertBefore(content, header.nextSibling);
+    }
+    
+    if (newExpanded) {
+        content.classList.remove('hidden');
+        // Render files in this group
+        renderFileGroup(type, peerId);
+    } else {
+        content.classList.add('hidden');
+    }
+}
+
+// Render files in a group
+function renderFileGroup(type, peerId = null) {
+    const groupKey = type === 'sent' ? 'sent' : peerId;
+    const contentId = type === 'sent' ? 'sent-files-group-content' : `received-files-group-content-${peerId}`;
+    
+    const content = document.getElementById(contentId);
+    if (!content) return;
+    
+    // Clear existing content
+    content.innerHTML = '';
+    
+    // Get files for this group
+    let files = [];
+    if (type === 'sent') {
+        files = fileGroups.sent.get('sent') || [];
+    } else {
+        files = fileGroups.received.get(peerId) || [];
+    }
+    
+    // Render each file
+    files.forEach(fileInfo => {
+        const li = createFileListItem(fileInfo, type);
+        content.appendChild(li);
+    });
+}
+
+// Create file list item (extracted from updateFilesList)
+function createFileListItem(fileInfo, type) {
     const li = document.createElement('li');
     li.className = 'file-item';
     li.setAttribute('data-file-id', fileInfo.id);
@@ -2677,7 +2937,7 @@ function updateFilesList(listElement, fileInfo, type) {
     sizeSpan.innerHTML = formatFileSize(fileInfo.size);
     sizeSpan.setAttribute('translate', 'no');
     sizeSpan.setAttribute('data-no-translate', 'true');
-
+    
     const sharedBySpan = document.createElement('span');
     sharedBySpan.className = 'shared-by';
     sharedBySpan.textContent = type === 'sent' ? 
@@ -2729,20 +2989,95 @@ function updateFilesList(listElement, fileInfo, type) {
     li.appendChild(info);
     li.appendChild(downloadBtn);
     
-    // Add to the beginning of the list for newest first
-    if (listElement.firstChild) {
-        listElement.insertBefore(li, listElement.firstChild);
-    } else {
-        listElement.appendChild(li);
+    return li;
+}
+
+// Render all file groups
+function renderAllFileGroups() {
+    // Render sent files header
+    const sentList = document.getElementById('sent-files-list');
+    if (sentList) {
+        const sentSection = sentList.closest('.files-section');
+        if (sentSection) {
+            const stats = getGroupStats('sent');
+            const existingHeader = document.getElementById('sent-files-header');
+            
+            if (stats.count > 0) {
+                // Show header if there are files
+                const sentHeader = createFileGroupHeader('sent');
+                
+                if (!existingHeader) {
+                    // Insert header before the list
+                    sentList.parentNode.insertBefore(sentHeader, sentList);
+                } else {
+                    // Update existing header
+                    const summary = existingHeader.querySelector('.file-group-summary');
+                    if (summary) {
+                        const fileText = stats.count === 1 ? 'file' : 'files';
+                        summary.textContent = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
+                    }
+                }
+            } else {
+                // Hide header if no files
+                if (existingHeader) {
+                    existingHeader.remove();
+                }
+                // Also remove content container if it exists
+                const content = document.getElementById('sent-files-group-content');
+                if (content) {
+                    content.remove();
+                }
+            }
+        }
     }
     
-    // Scroll the new received file into view
+    // Render received files headers (one per peer)
+    const receivedList = document.getElementById('received-files-list');
+    if (receivedList) {
+        const receivedSection = receivedList.closest('.files-section');
+        if (receivedSection) {
+            // Remove old headers
+            const oldHeaders = receivedList.parentNode.querySelectorAll('.file-group-header[data-group-type="received"]');
+            oldHeaders.forEach(h => h.remove());
+            
+            // Remove old content containers
+            const oldContents = receivedList.parentNode.querySelectorAll('.file-group-content[data-group-type="received"]');
+            oldContents.forEach(c => c.remove());
+            
+            // Create headers for each peer group that has files
+            for (const peerId of fileGroups.received.keys()) {
+                const stats = getGroupStats('received', peerId);
+                if (stats.count > 0) {
+                    const header = createFileGroupHeader('received', peerId);
+                    receivedList.parentNode.insertBefore(header, receivedList);
+                }
+            }
+        }
+    }
+}
+
+// Update files list display (now uses grouping)
+function updateFilesList(listElement, fileInfo, type) {
+    console.log('Updating files list:', { type, fileInfo });
+    
+    // Add file to appropriate group
+    addFileToGroup(fileInfo, type);
+    
+    // Render all groups (headers will be updated)
+    renderAllFileGroups();
+    
+    // If the group is expanded, update the content
+    const groupKey = type === 'sent' ? 'sent' : fileInfo.sharedBy;
+    const headerId = type === 'sent' ? 'sent-files-header' : `received-files-header-${fileInfo.sharedBy}`;
+    const header = document.getElementById(headerId);
+    
+    if (header && header.getAttribute('data-expanded') === 'true') {
+        // Group is expanded, render the file
+        renderFileGroup(type, fileInfo.sharedBy);
+    }
+    
+    // Update bulk download button state when a new received file is added
     if (type === 'received') {
-        setTimeout(() => {
-            li.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 100);
-        
-        // Update bulk download button state when a new received file is added
         updateBulkDownloadButtonState();
     }
     
