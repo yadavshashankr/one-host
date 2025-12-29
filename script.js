@@ -3066,7 +3066,20 @@ function renderFileGroup(type, peerId = null) {
         }
     }
     
-    // Then check DOM state for files that might be in progress or have different state
+    // Check downloadProgressMap directly for all files in this group
+    // This ensures progress is preserved even if DOM was cleared during header reordering
+    for (const fileInfo of files) {
+        const fileId = fileInfo.id;
+        if (downloadProgressMap.has(fileId)) {
+            const entry = downloadProgressMap.get(fileId);
+            progressState.set(fileId, {
+                percent: entry.percent,
+                disabled: entry.button.disabled
+            });
+        }
+    }
+    
+    // Then check DOM state for files that might have different state
     const existingItems = content.querySelectorAll('li.file-item');
     existingItems.forEach(li => {
         const fileId = li.getAttribute('data-file-id');
@@ -3075,14 +3088,8 @@ function renderFileGroup(type, peerId = null) {
             if (li.classList.contains('download-completed')) {
                 completedFiles.add(fileId);
             }
-            // Check if file is in progress
-            if (downloadProgressMap.has(fileId)) {
-                const entry = downloadProgressMap.get(fileId);
-                progressState.set(fileId, {
-                    percent: entry.percent,
-                    disabled: entry.button.disabled
-                });
-            }
+            // Note: Progress state is already checked from downloadProgressMap above
+            // This DOM check is mainly for completed state that might not be in tracking Sets
         }
     });
     
