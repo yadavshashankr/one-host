@@ -184,6 +184,9 @@ const fileGroups = {
 // Track order of received peer headers (most recent first)
 const receivedPeerOrder = []; // Array of peerIds
 
+// Track previous first peer to detect position changes for auto-scroll
+let previousFirstReceivedPeer = null;
+
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
 
@@ -3027,6 +3030,9 @@ function toggleFileGroup(type, peerId = null) {
         content.classList.remove('hidden');
         // Render files in this group
         renderFileGroup(type, peerId);
+        
+        // Scroll to show content if it extends beyond viewport bottom
+        scrollToShowExpandedContent(content);
     } else {
         content.classList.add('hidden');
     }
@@ -3250,6 +3256,8 @@ function renderAllFileGroups() {
                 if (!existingHeader) {
                     // Insert header before the list
                     sentList.parentNode.insertBefore(sentHeader, sentList);
+                    // Scroll to sent header when first created
+                    scrollHeaderToCenter('sent-files-header');
     } else {
                     // Update existing header
                     const summary = existingHeader.querySelector('.file-group-summary');
@@ -3288,6 +3296,9 @@ function renderAllFileGroups() {
             
             // Create headers for each peer group in order (most recent first)
             // Only render peers that still have files
+            const currentFirstPeer = receivedPeerOrder.length > 0 ? receivedPeerOrder[0] : null;
+            const shouldScrollToFirst = currentFirstPeer && currentFirstPeer !== previousFirstReceivedPeer;
+            
             for (const peerId of receivedPeerOrder) {
                 if (fileGroups.received.has(peerId)) {
                     const stats = getGroupStats('received', peerId);
@@ -3297,8 +3308,60 @@ function renderAllFileGroups() {
                     }
                 }
             }
+            
+            // Scroll to first peer header if it changed position or is new
+            if (shouldScrollToFirst && currentFirstPeer) {
+                const firstHeaderId = `received-files-header-${currentFirstPeer}`;
+                scrollHeaderToCenter(firstHeaderId);
+                previousFirstReceivedPeer = currentFirstPeer;
+            } else if (currentFirstPeer) {
+                // Update tracking even if we don't scroll
+                previousFirstReceivedPeer = currentFirstPeer;
+            } else {
+                // No peers, reset tracking
+                previousFirstReceivedPeer = null;
+            }
         }
     }
+}
+
+// Scroll header to center of viewport
+function scrollHeaderToCenter(headerId) {
+    const header = document.getElementById(headerId);
+    if (header) {
+        // Use requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(() => {
+            header.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
+        });
+    }
+}
+
+// Scroll to show content if it extends beyond viewport bottom
+function scrollToShowExpandedContent(contentElement) {
+    if (!contentElement) return;
+    
+    // Use requestAnimationFrame to ensure DOM is ready after rendering
+    requestAnimationFrame(() => {
+        const contentRect = contentElement.getBoundingClientRect();
+        const viewportHeight = window.innerHeight;
+        const contentBottom = contentRect.bottom;
+        
+        // Check if content extends beyond the bottom of the viewport
+        if (contentBottom > viewportHeight) {
+            // Calculate how much to scroll (show a bit more than just the bottom)
+            const scrollOffset = contentBottom - viewportHeight + 50; // 50px padding
+            
+            // Smooth scroll down to show the content
+            window.scrollBy({
+                top: scrollOffset,
+                behavior: 'smooth'
+            });
+        }
+    });
 }
 
 // Update files list display (now uses grouping)
