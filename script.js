@@ -181,6 +181,9 @@ const fileGroups = {
     received: new Map() // Received files grouped by peer (key: peerId)
 };
 
+// Track order of received peer headers (most recent first)
+const receivedPeerOrder = []; // Array of peerIds
+
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
 
@@ -243,7 +246,7 @@ requestAndDownloadBlob = async function(fileInfo) {
         downloadProgressMap.set(fileId, { button: btn, percent: 0 });
     }
     try {
-        await originalRequestAndDownloadBlob(fileInfo);
+    await originalRequestAndDownloadBlob(fileInfo);
     } catch (error) {
         // Re-enable button on error
         if (btn && downloadProgressMap.has(fileId)) {
@@ -2845,6 +2848,15 @@ function addFileToGroup(fileInfo, type) {
         }
         peerFiles.unshift(fileInfo); // Add to beginning (newest first)
         receivedFileInfoMap.set(fileInfo.id, fileInfo);
+        
+        // Update peer order: move this peer to the front (most recent first)
+        const peerOrderIndex = receivedPeerOrder.indexOf(peerId);
+        if (peerOrderIndex !== -1) {
+            // Peer exists in order, move to front
+            receivedPeerOrder.splice(peerOrderIndex, 1);
+        }
+        // Add peer to front (new peers or existing peers moved to front)
+        receivedPeerOrder.unshift(peerId);
     }
 }
 
@@ -2870,6 +2882,11 @@ function removeFileFromGroup(fileId, type) {
                 files.splice(index, 1);
                 if (files.length === 0) {
                     fileGroups.received.delete(peerId);
+                    // Remove peer from order array when group is empty
+                    const orderIndex = receivedPeerOrder.indexOf(peerId);
+                    if (orderIndex !== -1) {
+                        receivedPeerOrder.splice(orderIndex, 1);
+                    }
                 }
                 break;
             }
@@ -3159,7 +3176,7 @@ function createFileListItem(fileInfo, type) {
     sizeSpan.innerHTML = formatFileSize(fileInfo.size);
     sizeSpan.setAttribute('translate', 'no');
     sizeSpan.setAttribute('data-no-translate', 'true');
-    
+
     const sharedBySpan = document.createElement('span');
     sharedBySpan.className = 'shared-by';
     sharedBySpan.textContent = type === 'sent' ? 
@@ -3233,7 +3250,7 @@ function renderAllFileGroups() {
                 if (!existingHeader) {
                     // Insert header before the list
                     sentList.parentNode.insertBefore(sentHeader, sentList);
-                } else {
+    } else {
                     // Update existing header
                     const summary = existingHeader.querySelector('.file-group-summary');
                     if (summary) {
@@ -3269,12 +3286,15 @@ function renderAllFileGroups() {
             const oldContents = receivedList.parentNode.querySelectorAll('.file-group-content[data-group-type="received"]');
             oldContents.forEach(c => c.remove());
             
-            // Create headers for each peer group that has files
-            for (const peerId of fileGroups.received.keys()) {
-                const stats = getGroupStats('received', peerId);
-                if (stats.count > 0) {
-                    const header = createFileGroupHeader('received', peerId);
-                    receivedList.parentNode.insertBefore(header, receivedList);
+            // Create headers for each peer group in order (most recent first)
+            // Only render peers that still have files
+            for (const peerId of receivedPeerOrder) {
+                if (fileGroups.received.has(peerId)) {
+                    const stats = getGroupStats('received', peerId);
+                    if (stats.count > 0) {
+                        const header = createFileGroupHeader('received', peerId);
+                        receivedList.parentNode.insertBefore(header, receivedList);
+                    }
                 }
             }
         }
@@ -3300,8 +3320,8 @@ function updateFilesList(listElement, fileInfo, type) {
         // Group is expanded, render the file
         renderFileGroup(type, fileInfo.sharedBy);
     }
-    
-    // Update bulk download button state when a new received file is added
+        
+        // Update bulk download button state when a new received file is added
     if (type === 'received') {
         updateBulkDownloadButtonState();
     }
