@@ -3381,15 +3381,26 @@ function updateFilesList(listElement, fileInfo, type) {
     // Render all groups (headers will be updated)
     renderAllFileGroups();
     
-    // If the group is expanded, update the content
-    const groupKey = type === 'sent' ? 'sent' : fileInfo.sharedBy;
-    const headerId = type === 'sent' ? 'sent-files-header' : `received-files-header-${fileInfo.sharedBy}`;
-    const header = document.getElementById(headerId);
+    // Re-render all expanded groups to restore progress state
+    // This is necessary because renderAllFileGroups() removes all content containers
+    // which can break button references for files with active downloads
     
-    if (header && header.getAttribute('data-expanded') === 'true') {
-        // Group is expanded, render the file
-        renderFileGroup(type, fileInfo.sharedBy);
+    // Re-render sent files group if expanded
+    const sentHeader = document.getElementById('sent-files-header');
+    if (sentHeader && sentHeader.getAttribute('data-expanded') === 'true') {
+        renderFileGroup('sent');
     }
+    
+    // Re-render all expanded received file groups
+    const allReceivedHeaders = document.querySelectorAll('.file-group-header[data-group-type="received"]');
+    allReceivedHeaders.forEach(header => {
+        if (header.getAttribute('data-expanded') === 'true') {
+            const peerId = header.getAttribute('data-group-key');
+            if (peerId) {
+                renderFileGroup('received', peerId);
+            }
+        }
+    });
         
         // Update bulk download button state when a new received file is added
     if (type === 'received') {
