@@ -3348,6 +3348,7 @@ function scrollHeaderToCenter(headerId) {
 }
 
 // Scroll to show content if it extends beyond viewport bottom
+// Scrolls to center the first item in the list instead of scrolling to bottom
 function scrollToShowExpandedContent(contentElement) {
     if (!contentElement) return;
     
@@ -3359,14 +3360,23 @@ function scrollToShowExpandedContent(contentElement) {
         
         // Check if content extends beyond the bottom of the viewport
         if (contentBottom > viewportHeight) {
-            // Calculate how much to scroll (show a bit more than just the bottom)
-            const scrollOffset = contentBottom - viewportHeight + 50; // 50px padding
-            
-            // Smooth scroll down to show the content
-            window.scrollBy({
-                top: scrollOffset,
-                behavior: 'smooth'
-            });
+            // Find the first item in the list
+            const firstItem = contentElement.querySelector('li.file-item:first-child');
+            if (firstItem) {
+                // Scroll the first item to the center of the viewport
+                firstItem.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center',
+                    inline: 'nearest'
+                });
+            } else {
+                // Fallback: if no items found, scroll the content element itself
+                contentElement.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center',
+                    inline: 'nearest'
+                });
+            }
         }
     });
 }
