@@ -1539,47 +1539,199 @@ async function downloadAllReceivedFiles() {
         download_method: 'zip_parts'
     });
 
+    // Smart ZIP batching: Categorize files into ZIP batches and individual downloads
+    const ZIP_SIZE_LIMIT = 400 * 1024 * 1024; // 400MB in bytes
+    const zipBatches = []; // Array of fileInfo arrays for ZIP batches
+    const individualFiles = []; // Files to download individually
+    let currentBatch = [];
+    let currentBatchSize = 0;
+    
+    // Create a map of fileId to fileItem for later use
+    const fileItemMap = new Map();
+    fileItems.forEach(item => {
+        const fileId = item.getAttribute('data-file-id');
+        if (fileId) {
+            fileItemMap.set(fileId, item);
+        }
+    });
+    
+    // Process files in sorted order (smallest to largest)
+    for (let i = 0; i < undownloadedFiles.length; i++) {
+        const fileInfo = undownloadedFiles[i];
+        const fileSize = fileInfo.size || 0;
+        
+        // If file alone exceeds 400MB, always download individually
+        if (fileSize > ZIP_SIZE_LIMIT) {
+            individualFiles.push(fileInfo);
+            continue;
+        }
+        
+        // Check if file fits in current batch
+        if (currentBatchSize + fileSize <= ZIP_SIZE_LIMIT) {
+            // File fits, add to current batch
+            currentBatch.push(fileInfo);
+            currentBatchSize += fileSize;
+        } else {
+            // File doesn't fit in current batch
+            // Save current batch if it has files
+            if (currentBatch.length > 0) {
+                zipBatches.push([...currentBatch]);
+                currentBatch = [];
+                currentBatchSize = 0;
+            }
+            
+            // Check if this file can fit with any remaining files
+            let canFitWithRemaining = false;
+            let testSize = fileSize;
+            
+            // Check remaining files to see if any can fit with this file
+            for (let j = i + 1; j < undownloadedFiles.length; j++) {
+                const remainingFile = undownloadedFiles[j];
+                const remainingSize = remainingFile.size || 0;
+                
+                // Skip files that are too large alone
+                if (remainingSize > ZIP_SIZE_LIMIT) continue;
+                
+                if (testSize + remainingSize <= ZIP_SIZE_LIMIT) {
+                    canFitWithRemaining = true;
+                    break;
+                }
+            }
+            
+            if (canFitWithRemaining) {
+                // File can fit with remaining files, start new batch
+                currentBatch.push(fileInfo);
+                currentBatchSize = fileSize;
+            } else {
+                // File cannot fit with any remaining files, download individually
+                individualFiles.push(fileInfo);
+            }
+        }
+    }
+    
+    // Add final batch if it has files
+    if (currentBatch.length > 0) {
+        zipBatches.push(currentBatch);
+    }
+    
+    console.log(`📦 Categorized: ${zipBatches.length} ZIP batch(es), ${individualFiles.length} individual file(s)`);
+    
     // Show initial progress notification
-    showOrUpdateProgressNotification('downloading', 0, fileItems.length, 'downloading');
+    const totalFiles = fileItems.length;
+    showOrUpdateProgressNotification('downloading', 0, totalFiles, 'downloading');
+    
+    const allSuccessfulFileIds = new Set();
+    const allErrors = [];
+    let totalCompleted = 0;
 
     try {
-        // Delegate to BulkDownloadManager
-        const result = await bulkDownloadManager.downloadAllFiles(fileItems, {
-            receivedFileInfoMap: receivedFileInfoMap,
-            requestBlobFromPeer: requestBlobFromPeer,
-            showOrUpdateProgressNotification: showOrUpdateProgressNotification,
-            downloadBlob: downloadBlob,
-            activeBlobURLs: activeBlobURLs
-        });
+        // Process ZIP batches through BulkDownloadManager
+        if (zipBatches.length > 0) {
+            for (let batchIndex = 0; batchIndex < zipBatches.length; batchIndex++) {
+                const batch = zipBatches[batchIndex];
+                
+                // Create fileItems for this batch
+                const batchFileItems = batch.map(fileInfo => {
+                    const fileId = fileInfo.id;
+                    return fileItemMap.get(fileId) || (() => {
+                        const tempItem = document.createElement('li');
+                        tempItem.className = 'file-item';
+                        tempItem.setAttribute('data-file-id', fileId);
+                        return tempItem;
+                    })();
+                });
+                
+                console.log(`📦 Processing ZIP batch ${batchIndex + 1}/${zipBatches.length} with ${batch.length} files`);
+                
+                // Process batch through BulkDownloadManager
+                const zipResult = await bulkDownloadManager.downloadAllFiles(batchFileItems, {
+                    receivedFileInfoMap: receivedFileInfoMap,
+                    requestBlobFromPeer: requestBlobFromPeer,
+                    showOrUpdateProgressNotification: (key, current, total, operation) => {
+                        // Update progress including individual files completed
+                        showOrUpdateProgressNotification('downloading', totalCompleted + current, totalFiles, operation);
+                    },
+                    downloadBlob: downloadBlob,
+                    activeBlobURLs: activeBlobURLs
+                });
+                
+                // Track successful files from ZIP
+                zipResult.successfulFileIds.forEach(fileId => {
+                    allSuccessfulFileIds.add(fileId);
+                    bulkDownloadedFiles.add(fileId);
+                    totalCompleted++;
+                });
+                
+                allErrors.push(...zipResult.errors);
+            }
+        }
+        
+        // Process individual files with progress tracking
+        if (individualFiles.length > 0) {
+            console.log(`📥 Processing ${individualFiles.length} individual file(s)`);
+            
+            for (let i = 0; i < individualFiles.length; i++) {
+                const fileInfo = individualFiles[i];
+                const fileId = fileInfo.id;
+                
+                try {
+                    // Update progress
+                    showOrUpdateProgressNotification('downloading', totalCompleted, totalFiles, 'downloading');
+                    
+                    // Download file individually (this will show progress via downloadProgressMap)
+                    await requestAndDownloadBlob(fileInfo);
+                    
+                    // Mark as successfully downloaded (individually, not in ZIP)
+                    allSuccessfulFileIds.add(fileId);
+                    totalCompleted++;
+                    
+                    // Update progress after completion
+                    showOrUpdateProgressNotification('downloading', totalCompleted, totalFiles, 'downloading');
+                    
+                } catch (error) {
+                    console.error(`Error downloading individual file ${fileInfo.name}:`, error);
+                    allErrors.push(fileInfo.name);
+                }
+            }
+        }
+        
+        // Create result object similar to BulkDownloadManager format
+        const result = {
+            successCount: totalCompleted,
+            errors: allErrors,
+            partsCreated: zipBatches.length,
+            successfulFileIds: allSuccessfulFileIds
+        };
 
         if (result.successCount === 0) {
             throw new Error('Failed to fetch any files');
         }
 
-        // Mark all successfully added files as downloaded
-        // Track them in bulkDownloadedFiles Set for state persistence
-        for (const fileId of result.successfulFileIds) {
-            // Track as bulk downloaded
-            bulkDownloadedFiles.add(fileId);
-        }
+        // Mark files as downloaded based on how they were downloaded
+        // ZIP files: mark in bulkDownloadedFiles
+        // Individual files: already handled by requestAndDownloadBlob (stored in completedFileBlobURLs)
         
-        // Update DOM elements for all successful files
-        for (const item of fileItems) {
-            const fileId = item.getAttribute('data-file-id');
-            if (fileId && result.successfulFileIds.has(fileId)) {
-                // Mark in DOM if element exists
-                item.classList.add('download-completed');
-                const downloadButton = item.querySelector('.icon-button');
-                if (downloadButton) {
-                    downloadButton.classList.add('download-completed');
-                    downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-                    downloadButton.title = 'File included in ZIP';
+        // Create sets to distinguish ZIP files from individual files
+        const zipFileIds = new Set();
+        zipBatches.forEach(batch => {
+            batch.forEach(fileInfo => {
+                if (result.successfulFileIds.has(fileInfo.id)) {
+                    zipFileIds.add(fileInfo.id);
+                    bulkDownloadedFiles.add(fileInfo.id);
                 }
-            }
-        }
+            });
+        });
         
-        // Update all DOM elements with these fileIds (in case files are in multiple groups or collapsed)
-        for (const fileId of result.successfulFileIds) {
+        const individualFileIds = new Set();
+        individualFiles.forEach(fileInfo => {
+            if (result.successfulFileIds.has(fileInfo.id)) {
+                individualFileIds.add(fileInfo.id);
+                // Individual files are already tracked in completedFileBlobURLs by requestAndDownloadBlob
+            }
+        });
+        
+        // Update DOM elements for ZIP files
+        for (const fileId of zipFileIds) {
             const allItems = document.querySelectorAll(`li.file-item[data-file-id="${fileId}"]`);
             allItems.forEach(li => {
                 li.classList.add('download-completed');
@@ -1596,6 +1748,9 @@ async function downloadAllReceivedFiles() {
                 }
             });
         }
+        
+        // Individual files are already updated by requestAndDownloadBlob via downloadBlob function
+        // which sets up the open_in_new icon and onclick handler
         
         // Expand all received file groups temporarily to update their UI, then collapse them back
         // This ensures all files show as completed even if groups were collapsed
