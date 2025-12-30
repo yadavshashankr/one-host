@@ -1643,6 +1643,13 @@ async function downloadAllReceivedFiles() {
             download_method: 'zip_parts'
         });
     } finally {
+        // Always clear the progress notification when bulk download completes, fails, or partially completes
+        const progressNotification = activeProgressNotifications['downloading'];
+        if (progressNotification && progressNotification.parentNode) {
+            progressNotification.remove();
+        }
+        activeProgressNotifications['downloading'] = null;
+        
         // Re-enable button
         if (elements.bulkDownloadReceived) {
             elements.bulkDownloadReceived.disabled = false;
@@ -3424,7 +3431,7 @@ function updateFilesList(listElement, fileInfo, type) {
             const header = document.getElementById(firstHeaderId);
             if (header) {
                 // Use a small delay to ensure DOM is ready after renderAllFileGroups()
-                setTimeout(() => {
+        setTimeout(() => {
                     scrollHeaderToCenter(firstHeaderId);
                     previousFirstReceivedPeer = peerId;
                 }, 50);
