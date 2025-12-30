@@ -1464,40 +1464,60 @@ async function downloadAllReceivedFiles() {
         return;
     }
     
+    // Sort files by size (smallest to largest) for optimal download order
+    // This ensures smaller files download first, providing faster feedback and better UX
+    undownloadedFiles.sort((a, b) => {
+        const sizeA = a.size || 0;
+        const sizeB = b.size || 0;
+        return sizeA - sizeB;
+    });
+    
     // Create file items for the bulk download manager
     // The bulk download manager needs DOM elements with data-file-id attributes
-    // We'll create temporary items for all undownloaded files
+    // We'll create temporary items for all undownloaded files in sorted order
     const fileItems = [];
     const seenIds = new Set();
+    const fileInfoMap = new Map(); // Map fileId to fileInfo for quick lookup
     
-    // First, try to find existing DOM elements (from expanded groups)
+    // Build a map of fileId to fileInfo for quick lookup
+    undownloadedFiles.forEach(fileInfo => {
+        fileInfoMap.set(fileInfo.id, fileInfo);
+        // Ensure fileInfo is in receivedFileInfoMap (it should be, but double-check)
+        if (!receivedFileInfoMap.has(fileInfo.id)) {
+            receivedFileInfoMap.set(fileInfo.id, fileInfo);
+        }
+    });
+    
+    // First, try to find existing DOM elements (from expanded groups) in sorted order
     const allContentContainers = document.querySelectorAll('.file-group-content[data-group-type="received"]');
+    const domItemsMap = new Map(); // Map fileId to DOM element
+    
     allContentContainers.forEach(container => {
         const items = container.querySelectorAll('li.file-item');
         items.forEach(item => {
             const fileId = item.getAttribute('data-file-id');
-            if (fileId && !seenIds.has(fileId) && undownloadedFiles.some(f => f.id === fileId)) {
-                seenIds.add(fileId);
-                fileItems.push(item);
+            if (fileId && fileInfoMap.has(fileId)) {
+                domItemsMap.set(fileId, item);
             }
         });
     });
     
-    // For files that don't have DOM elements (from collapsed groups), create temporary items
+    // Process files in sorted order (smallest to largest)
     undownloadedFiles.forEach(fileInfo => {
-        if (!seenIds.has(fileInfo.id)) {
+        const fileId = fileInfo.id;
+        if (seenIds.has(fileId)) return;
+        
+        // Use existing DOM element if available, otherwise create temporary item
+        let item = domItemsMap.get(fileId);
+        if (!item) {
             // Create a temporary list item for the bulk download manager
-            // This is needed because the manager expects DOM elements with data-file-id
-            const tempItem = document.createElement('li');
-            tempItem.className = 'file-item';
-            tempItem.setAttribute('data-file-id', fileInfo.id);
-            // Ensure fileInfo is in receivedFileInfoMap (it should be, but double-check)
-            if (!receivedFileInfoMap.has(fileInfo.id)) {
-                receivedFileInfoMap.set(fileInfo.id, fileInfo);
-            }
-            fileItems.push(tempItem);
-            seenIds.add(fileInfo.id);
+            item = document.createElement('li');
+            item.className = 'file-item';
+            item.setAttribute('data-file-id', fileId);
         }
+        
+        fileItems.push(item);
+        seenIds.add(fileId);
     });
     
     if (fileItems.length === 0) {
