@@ -3401,6 +3401,26 @@ function updateFilesList(listElement, fileInfo, type) {
             }
         }
     });
+    
+    // If a received file was added, check if the peer is first and scroll to it
+    // This ensures scrolling happens even if renderAllFileGroups() didn't trigger it
+    if (type === 'received' && fileInfo.sharedBy) {
+        const peerId = fileInfo.sharedBy;
+        // Check if this peer is now first in the order
+        if (receivedPeerOrder.length > 0 && receivedPeerOrder[0] === peerId) {
+            // Always scroll when a file is received from the first peer
+            // This handles the case where the peer was already first but scroll didn't happen
+            const firstHeaderId = `received-files-header-${peerId}`;
+            const header = document.getElementById(firstHeaderId);
+            if (header) {
+                // Use a small delay to ensure DOM is ready after renderAllFileGroups()
+                setTimeout(() => {
+                    scrollHeaderToCenter(firstHeaderId);
+                    previousFirstReceivedPeer = peerId;
+                }, 50);
+            }
+        }
+    }
         
         // Update bulk download button state when a new received file is added
     if (type === 'received') {
