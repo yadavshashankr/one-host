@@ -243,18 +243,27 @@ requestAndDownloadBlob = async function(fileInfo) {
             btn = listItem.querySelector('button.icon-button');
         }
     }
+    // Always set up progress tracking, even if button isn't found (e.g., header is collapsed)
+    // This ensures progress can be restored when header is expanded
     if (btn) {
         btn.disabled = true;
         btn.innerHTML = '<span class="download-progress-text" translate="no">0%</span>';
         downloadProgressMap.set(fileId, { button: btn, percent: 0 });
+    } else {
+        // Button not found (header might be collapsed) - still track progress
+        // Button reference will be updated when header is expanded and renderFileGroup runs
+        downloadProgressMap.set(fileId, { button: null, percent: 0 });
     }
     try {
     await originalRequestAndDownloadBlob(fileInfo);
     } catch (error) {
-        // Re-enable button on error
+        // Re-enable button on error if it exists
         if (btn && downloadProgressMap.has(fileId)) {
             btn.disabled = false;
             btn.innerHTML = '<span class="material-icons" translate="no">download</span>';
+            downloadProgressMap.delete(fileId);
+        } else if (downloadProgressMap.has(fileId)) {
+            // Button not found, just remove from tracking
             downloadProgressMap.delete(fileId);
         }
         throw error;
@@ -268,8 +277,12 @@ updateProgress = function(progress, fileId) {
         const entry = downloadProgressMap.get(fileId);
         const percent = Math.floor(progress);
         if (entry.percent !== percent) {
-            entry.button.innerHTML = `<span class='download-progress-text' translate="no">${percent}%</span>`;
             entry.percent = percent;
+            // Update button if it exists (might be null if header is collapsed)
+            if (entry.button) {
+                entry.button.innerHTML = `<span class='download-progress-text' translate="no">${percent}%</span>`;
+            }
+            // Progress is still tracked in downloadProgressMap, will be restored when header is expanded
         }
     }
     originalUpdateProgress(progress);
@@ -3335,13 +3348,25 @@ function renderFileGroup(type, peerId = null) {
             }
         }
         // Restore progress state if this file was downloading
-        else if (progressState.has(fileId)) {
-            const state = progressState.get(fileId);
+        else if (progressState.has(fileId) || downloadProgressMap.has(fileId)) {
+            // Check downloadProgressMap again to get the latest progress value
+            // (progress may have updated while header was collapsed)
+            const currentEntry = downloadProgressMap.get(fileId);
             if (btn) {
-                btn.disabled = state.disabled;
-                btn.innerHTML = `<span class='download-progress-text' translate="no">${state.percent}%</span>`;
-                // Update downloadProgressMap with new button reference
-                downloadProgressMap.set(fileId, { button: btn, percent: state.percent });
+                if (currentEntry) {
+                    // Use the latest progress value from downloadProgressMap
+                    const latestPercent = currentEntry.percent;
+                    btn.disabled = true; // Download in progress
+                    btn.innerHTML = `<span class='download-progress-text' translate="no">${latestPercent}%</span>`;
+                    // Update downloadProgressMap with new button reference so future updateProgress calls work
+                    downloadProgressMap.set(fileId, { button: btn, percent: latestPercent });
+                } else if (progressState.has(fileId)) {
+                    // Fallback: use saved state if downloadProgressMap doesn't have it
+                    const state = progressState.get(fileId);
+                    btn.disabled = state.disabled;
+                    btn.innerHTML = `<span class='download-progress-text' translate="no">${state.percent}%</span>`;
+                    downloadProgressMap.set(fileId, { button: btn, percent: state.percent });
+                }
             }
         }
     });
