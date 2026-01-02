@@ -1540,7 +1540,8 @@ async function downloadAllReceivedFiles() {
     });
 
     // Smart ZIP batching: Categorize files into ZIP batches and individual downloads
-    const ZIP_SIZE_LIMIT = 400 * 1024 * 1024; // 400MB in bytes
+    const ZIP_SIZE_LIMIT = 400 * 1024 * 1024; // 400MB in bytes - maximum size of a ZIP batch
+    const INDIVIDUAL_DOWNLOAD_THRESHOLD = 350 * 1024 * 1024; // 350MB in bytes - files above this are downloaded individually
     const zipBatches = []; // Array of fileInfo arrays for ZIP batches
     const individualFiles = []; // Files to download individually
     let currentBatch = [];
@@ -1560,13 +1561,13 @@ async function downloadAllReceivedFiles() {
         const fileInfo = undownloadedFiles[i];
         const fileSize = fileInfo.size || 0;
         
-        // If file alone exceeds 400MB, always download individually
-        if (fileSize > ZIP_SIZE_LIMIT) {
+        // If file exceeds 350MB, always download individually (not in ZIP)
+        if (fileSize > INDIVIDUAL_DOWNLOAD_THRESHOLD) {
             individualFiles.push(fileInfo);
             continue;
         }
         
-        // Check if file fits in current batch
+        // Check if file fits in current batch (batch size limit is still 400MB)
         if (currentBatchSize + fileSize <= ZIP_SIZE_LIMIT) {
             // File fits, add to current batch
             currentBatch.push(fileInfo);
@@ -1589,8 +1590,8 @@ async function downloadAllReceivedFiles() {
                 const remainingFile = undownloadedFiles[j];
                 const remainingSize = remainingFile.size || 0;
                 
-                // Skip files that are too large alone
-                if (remainingSize > ZIP_SIZE_LIMIT) continue;
+                // Skip files that exceed 350MB threshold (they should be downloaded individually)
+                if (remainingSize > INDIVIDUAL_DOWNLOAD_THRESHOLD) continue;
                 
                 if (testSize + remainingSize <= ZIP_SIZE_LIMIT) {
                     canFitWithRemaining = true;
@@ -1615,7 +1616,7 @@ async function downloadAllReceivedFiles() {
     }
     
     console.log(`📦 Categorized: ${zipBatches.length} ZIP batch(es), ${individualFiles.length} individual file(s)`);
-    
+
     // Show initial progress notification
     const totalFiles = fileItems.length;
     showOrUpdateProgressNotification('downloading', 0, totalFiles, 'downloading');
@@ -1645,15 +1646,15 @@ async function downloadAllReceivedFiles() {
                 
                 // Process batch through BulkDownloadManager
                 const zipResult = await bulkDownloadManager.downloadAllFiles(batchFileItems, {
-                    receivedFileInfoMap: receivedFileInfoMap,
-                    requestBlobFromPeer: requestBlobFromPeer,
+            receivedFileInfoMap: receivedFileInfoMap,
+            requestBlobFromPeer: requestBlobFromPeer,
                     showOrUpdateProgressNotification: (key, current, total, operation) => {
                         // Update progress including individual files completed
                         showOrUpdateProgressNotification('downloading', totalCompleted + current, totalFiles, operation);
                     },
-                    downloadBlob: downloadBlob,
-                    activeBlobURLs: activeBlobURLs
-                });
+            downloadBlob: downloadBlob,
+            activeBlobURLs: activeBlobURLs
+        });
                 
                 // Track successful files from ZIP
                 zipResult.successfulFileIds.forEach(fileId => {
