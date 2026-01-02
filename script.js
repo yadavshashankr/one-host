@@ -3271,10 +3271,13 @@ function renderFileGroup(type, peerId = null) {
         const fileId = fileInfo.id;
         if (downloadProgressMap.has(fileId)) {
             const entry = downloadProgressMap.get(fileId);
-            progressState.set(fileId, {
-                percent: entry.percent,
-                disabled: entry.button ? entry.button.disabled : true // Default to disabled if button is null
-            });
+            // Safety check: ensure entry exists and has expected structure
+            if (entry && typeof entry === 'object') {
+                progressState.set(fileId, {
+                    percent: entry.percent || 0,
+                    disabled: entry.button ? entry.button.disabled : true // Default to disabled if button is null
+                });
+            }
         }
     }
     
