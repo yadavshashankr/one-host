@@ -295,8 +295,11 @@ handleFileComplete = async function(data) {
     const fileId = data.fileId;
     if (downloadProgressMap.has(fileId)) {
         const entry = downloadProgressMap.get(fileId);
-        entry.button.disabled = false;
-        entry.button.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+        // Only update button if it exists (might be null if header was collapsed)
+        if (entry.button) {
+            entry.button.disabled = false;
+            entry.button.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+        }
         // The open logic is already set in downloadBlob
         downloadProgressMap.delete(fileId);
     }
@@ -3270,7 +3273,7 @@ function renderFileGroup(type, peerId = null) {
             const entry = downloadProgressMap.get(fileId);
             progressState.set(fileId, {
                 percent: entry.percent,
-                disabled: entry.button.disabled
+                disabled: entry.button ? entry.button.disabled : true // Default to disabled if button is null
             });
         }
     }
