@@ -193,8 +193,9 @@ const sentFileBlobs = new Map(); // Map to store blobs of sent files
 // Track all blob URLs for cleanup
 const activeBlobURLs = new Set(); // Set to track all created blob URLs
 
-// Store blob URLs for completed files so they can be opened after re-rendering
-const completedFileBlobURLs = new Map(); // fileId -> blobUrl
+// Track completed file downloads (used as flag - fileId -> true, no longer stores blob URLs)
+// Files are cleared from memory after download, users should check Downloads folder
+const completedFileBlobURLs = new Map(); // fileId -> true (flag to track downloaded files)
 
 // Track files that were downloaded via bulk download (in ZIP, can't open individually)
 const bulkDownloadedFiles = new Set(); // fileId -> true
@@ -297,8 +298,8 @@ handleFileComplete = async function(data) {
         const entry = downloadProgressMap.get(fileId);
         // Only update button if it exists (might be null if header was collapsed)
         if (entry.button) {
-            entry.button.disabled = false;
-            entry.button.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+        entry.button.disabled = false;
+        entry.button.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
         }
         // The open logic is already set in downloadBlob
         downloadProgressMap.delete(fileId);
@@ -1129,10 +1130,21 @@ async function handleFileComplete(data) {
                     downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                     downloadButton.title = 'Open file';
                     
-                    // Store the blob URL for opening the file
-                    const blobUrl = URL.createObjectURL(blob);
-                    activeBlobURLs.add(blobUrl); // Track for cleanup
-                    completedFileBlobURLs.set(data.fileId, blobUrl); // Store for re-rendering
+                    // Clear any existing blob URL for this file (if re-downloaded)
+                    if (completedFileBlobURLs.has(data.fileId)) {
+                        const existingValue = completedFileBlobURLs.get(data.fileId);
+                        // If it's a blob URL (string), revoke it
+                        if (typeof existingValue === 'string') {
+                            URL.revokeObjectURL(existingValue);
+                            activeBlobURLs.delete(existingValue);
+                        }
+                        completedFileBlobURLs.delete(data.fileId);
+                    }
+                    
+                    // Mark file as downloaded (without storing blob URL - file is in Downloads folder)
+                    completedFileBlobURLs.set(data.fileId, true); // Use as flag to track downloaded files
+                    
+                    // Show notification when user clicks to open
                     downloadButton.onclick = () => {
                         // Track file open click
                         Analytics.track('file_open_clicked', {
@@ -1140,7 +1152,7 @@ async function handleFileComplete(data) {
                             file_type: Analytics.getFileExtension(fileData.fileName),
                             device_type: Analytics.getDeviceType()
                         });
-                        window.open(blobUrl, '_blank');
+                        showNotification('Please check your Downloads folder', 'info');
                     };
                 }
                 
@@ -1468,7 +1480,7 @@ async function downloadAllReceivedFiles() {
         // Check if file is marked as completed in DOM
         const listItem = document.querySelector(`li.file-item[data-file-id="${fileId}"]`);
         const isCompletedInDOM = listItem && listItem.classList.contains('download-completed');
-        // Check if file has a blob URL stored (individually downloaded)
+        // Check if file was individually downloaded (tracked in completedFileBlobURLs)
         const hasBlobURL = completedFileBlobURLs.has(fileId);
         // Check if file was bulk downloaded (in ZIP)
         const wasBulkDownloaded = bulkDownloadedFiles.has(fileId);
@@ -3349,34 +3361,34 @@ function renderFileGroup(type, peerId = null) {
                         showNotification('This file was downloaded in a ZIP archive. Check your downloads folder.', 'info');
                     };
                 } else {
-                    // File was individually downloaded - can open from blob URL
+                    // File was individually downloaded - show notification instead of opening
                     btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                     btn.title = 'File downloaded - click to open';
                     
-                    // Restore the open handler with stored blob URL
-                    const blobUrl = completedFileBlobURLs.get(fileId);
-                    if (blobUrl) {
-                        btn.onclick = () => {
-                            // Track file open click
-                            Analytics.track('file_open_clicked', {
-                                file_size: fileInfo.size,
-                                file_type: Analytics.getFileExtension(fileInfo.name),
-                                device_type: Analytics.getDeviceType()
-                            });
-                            window.open(blobUrl, '_blank');
-                        };
+                    // Clear any existing blob URL (shouldn't exist, but clean up if it does)
+                    if (completedFileBlobURLs.has(fileId)) {
+                        const existingValue = completedFileBlobURLs.get(fileId);
+                        // If it's a blob URL (string), revoke it
+                        if (typeof existingValue === 'string') {
+                            URL.revokeObjectURL(existingValue);
+                            activeBlobURLs.delete(existingValue);
+                        }
+                        // Keep the flag (true) to track that file was downloaded
                     } else {
-                        // If blob URL is not available, fall back to download
-                        console.warn('Blob URL not found for completed file:', fileId);
-                        btn.onclick = async () => {
-                            if (type === 'sent' && sentFileBlobs.has(fileInfo.id)) {
-                                const blob = sentFileBlobs.get(fileInfo.id);
-                                downloadBlob(blob, fileInfo.name, fileInfo.id);
-                            } else {
-                                await requestAndDownloadBlob(fileInfo);
-                            }
-                        };
+                        // Mark file as downloaded (if not already marked)
+                        completedFileBlobURLs.set(fileId, true);
                     }
+                    
+                    // Show notification when user clicks to open (file is in Downloads folder)
+                    btn.onclick = () => {
+                        // Track file open click
+                        Analytics.track('file_open_clicked', {
+                            file_size: fileInfo.size,
+                            file_type: Analytics.getFileExtension(fileInfo.name),
+                            device_type: Analytics.getDeviceType()
+                        });
+                        showNotification('Please check your Downloads folder', 'info');
+                    };
                 }
             }
         }
@@ -3994,6 +4006,17 @@ function downloadBlob(blob, fileName, fileId) {
 
     // If fileId is provided, update the UI
     if (fileId) {
+        // Clear any existing blob URL for this file (if re-downloaded)
+        if (completedFileBlobURLs.has(fileId)) {
+            const existingValue = completedFileBlobURLs.get(fileId);
+            // If it's a blob URL (string), revoke it
+            if (typeof existingValue === 'string') {
+                URL.revokeObjectURL(existingValue);
+                activeBlobURLs.delete(existingValue);
+            }
+            completedFileBlobURLs.delete(fileId);
+        }
+        
         const listItem = document.querySelector(`[data-file-id="${fileId}"]`);
         if (listItem) {
             listItem.classList.add('download-completed');
@@ -4003,10 +4026,10 @@ function downloadBlob(blob, fileName, fileId) {
                 downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
                 downloadButton.title = 'Open file';
                 
-                // Store the blob URL for opening the file
-                const openUrl = URL.createObjectURL(blob);
-                activeBlobURLs.add(openUrl); // Track for cleanup
-                completedFileBlobURLs.set(fileId, openUrl); // Store for re-rendering
+                // Mark file as downloaded (without storing blob URL - file is in Downloads folder)
+                completedFileBlobURLs.set(fileId, true); // Use as flag to track downloaded files
+                
+                // Show notification when user clicks to open
                 downloadButton.onclick = () => {
                     // Track file open click
                     Analytics.track('file_open_clicked', {
@@ -4014,7 +4037,7 @@ function downloadBlob(blob, fileName, fileId) {
                         file_type: Analytics.getFileExtension(fileName),
                         device_type: Analytics.getDeviceType()
                     });
-                    window.open(openUrl, '_blank');
+                    showNotification('Please check your Downloads folder', 'info');
                 };
             }
         }
