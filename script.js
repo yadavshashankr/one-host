@@ -1842,6 +1842,13 @@ async function downloadAllReceivedFiles() {
         }
         activeProgressNotifications['downloading'] = null;
         
+        // Also dismiss the download prompt notification
+        const promptNotification = activeProgressNotifications.downloadPrompt;
+        if (promptNotification && promptNotification.parentNode) {
+            promptNotification.remove();
+        }
+        activeProgressNotifications.downloadPrompt = null;
+        
         // Re-enable button
         if (elements.bulkDownloadReceived) {
             elements.bulkDownloadReceived.disabled = false;
@@ -2167,7 +2174,8 @@ function formatFileSize(bytes) {
 // Track active progress notifications
 const activeProgressNotifications = {
     sending: null,
-    downloading: null
+    downloading: null,
+    downloadPrompt: null // Notification about allowing download prompts
 };
 
 // Track bulk download progress
@@ -2210,6 +2218,16 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
         notification.setAttribute('data-progress-key', key);
         elements.notifications.appendChild(notification);
         activeProgressNotifications[key] = notification;
+        
+        // If this is a downloading notification, show the download prompt notification on top
+        if (key === 'downloading' && !activeProgressNotifications.downloadPrompt) {
+            const promptNotification = document.createElement('div');
+            promptNotification.className = 'notification info download-prompt-notification';
+            promptNotification.innerHTML = 'Allow all download prompts as soon as they appear on the screen to ensure successful downloads.';
+            // Insert before the download notification to appear on top
+            elements.notifications.insertBefore(promptNotification, notification);
+            activeProgressNotifications.downloadPrompt = promptNotification;
+        }
     }
     
     // Update notification content
@@ -2222,6 +2240,15 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                 notification.remove();
             }
             activeProgressNotifications[key] = null;
+            
+            // Also dismiss the download prompt notification if it exists
+            if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
+                const promptNotification = activeProgressNotifications.downloadPrompt;
+                if (promptNotification && promptNotification.parentNode) {
+                    promptNotification.remove();
+                }
+                activeProgressNotifications.downloadPrompt = null;
+            }
         }, 2000);
     }
     
