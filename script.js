@@ -2234,83 +2234,53 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
         notification.setAttribute('data-progress-key', key);
         notification.style.position = 'relative';
         
-        // Create X close button
-        const closeButton = document.createElement('button');
-        closeButton.className = 'notification-close';
-        closeButton.innerHTML = '×';
-        closeButton.setAttribute('aria-label', 'Close notification');
-        closeButton.style.cssText = `
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            background: none;
-            border: none;
-            font-size: 24px;
-            line-height: 1;
-            cursor: pointer;
-            color: inherit;
-            opacity: 0.7;
-            padding: 4px 8px;
-            transition: opacity 0.2s;
-        `;
-        closeButton.addEventListener('mouseenter', () => {
-            closeButton.style.opacity = '1';
-        });
-        closeButton.addEventListener('mouseleave', () => {
-            closeButton.style.opacity = '0.7';
-        });
-        
-        // Dismiss function
-        const dismissNotification = () => {
-            if (notification && notification.parentNode) {
-                notification.style.opacity = '0';
-                notification.style.transform = 'translateX(100%)';
-                setTimeout(() => {
-                notification.remove();
-                }, 300);
-            }
-            activeProgressNotifications[key] = null;
-            
-            // Also dismiss the download prompt notification if it exists
-            if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
-                const promptNotification = activeProgressNotifications.downloadPrompt;
-                if (promptNotification && promptNotification.parentNode) {
-                    promptNotification.style.opacity = '0';
-                    promptNotification.style.transform = 'translateX(100%)';
-                    setTimeout(() => {
-                        promptNotification.remove();
-                    }, 300);
-                }
-                activeProgressNotifications.downloadPrompt = null;
-            }
-        };
-        
-        closeButton.addEventListener('click', (e) => {
-            e.stopPropagation();
-            dismissNotification();
-        });
-        
-        // Create content container
+        // Create content container (no padding initially - will add if isComplete)
         const content = document.createElement('div');
-        content.style.paddingRight = '32px'; // Space for X button
         notification.appendChild(content);
-        notification.appendChild(closeButton);
         
         elements.notifications.appendChild(notification);
         activeProgressNotifications[key] = notification;
         
         // If this is a downloading notification, show the download prompt notification on top
+        // (but only show X button on prompt when download is complete)
         if (key === 'downloading' && !activeProgressNotifications.downloadPrompt) {
             const promptNotification = document.createElement('div');
             promptNotification.className = 'notification info download-prompt-notification';
             promptNotification.style.position = 'relative';
             
-            // Create X close button for prompt notification
-            const promptCloseButton = document.createElement('button');
-            promptCloseButton.className = 'notification-close';
-            promptCloseButton.innerHTML = '×';
-            promptCloseButton.setAttribute('aria-label', 'Close notification');
-            promptCloseButton.style.cssText = `
+            const promptContent = document.createElement('div');
+            promptContent.innerHTML = 'Allow all download prompts as soon as they appear on the screen to ensure successful downloads.';
+            promptNotification.appendChild(promptContent);
+            
+            // Insert before the download notification to appear on top
+            elements.notifications.insertBefore(promptNotification, notification);
+            activeProgressNotifications.downloadPrompt = promptNotification;
+        }
+    }
+    
+    // Update notification content
+    const content = notification.firstElementChild;
+    if (content && content.tagName === 'DIV') {
+        content.textContent = message;
+    } else {
+        // Fallback: if structure is different, update directly
+        const allDivs = notification.querySelectorAll('div');
+        if (allDivs.length > 0) {
+            allDivs[0].textContent = message;
+        }
+    }
+    
+    // Handle X close button and auto-dismiss based on completion status
+    const existingCloseButton = notification.querySelector('.notification-close');
+    
+    if (isComplete) {
+        // When complete: Add X close button if not already present, and persist notification
+        if (!existingCloseButton) {
+            const closeButton = document.createElement('button');
+            closeButton.className = 'notification-close';
+            closeButton.innerHTML = '×';
+            closeButton.setAttribute('aria-label', 'Close notification');
+            closeButton.style.cssText = `
                 position: absolute;
                 top: 8px;
                 right: 8px;
@@ -2324,53 +2294,129 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                 padding: 4px 8px;
                 transition: opacity 0.2s;
             `;
-            promptCloseButton.addEventListener('mouseenter', () => {
-                promptCloseButton.style.opacity = '1';
+            closeButton.addEventListener('mouseenter', () => {
+                closeButton.style.opacity = '1';
             });
-            promptCloseButton.addEventListener('mouseleave', () => {
-                promptCloseButton.style.opacity = '0.7';
+            closeButton.addEventListener('mouseleave', () => {
+                closeButton.style.opacity = '0.7';
             });
             
-            const promptContent = document.createElement('div');
-            promptContent.innerHTML = 'Allow all download prompts as soon as they appear on the screen to ensure successful downloads.';
-            promptContent.style.paddingRight = '32px';
-            promptNotification.appendChild(promptContent);
-            promptNotification.appendChild(promptCloseButton);
-            
-            // Dismiss prompt notification
-            promptCloseButton.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (promptNotification && promptNotification.parentNode) {
-                    promptNotification.style.opacity = '0';
-                    promptNotification.style.transform = 'translateX(100%)';
+            // Dismiss function
+            const dismissNotification = () => {
+                if (notification && notification.parentNode) {
+                    notification.style.opacity = '0';
+                    notification.style.transform = 'translateX(100%)';
                     setTimeout(() => {
-                        promptNotification.remove();
+                        notification.remove();
                     }, 300);
                 }
-                activeProgressNotifications.downloadPrompt = null;
+                activeProgressNotifications[key] = null;
+                
+                // Also dismiss the download prompt notification if it exists
+                if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
+                    const promptNotification = activeProgressNotifications.downloadPrompt;
+                    if (promptNotification && promptNotification.parentNode) {
+                        promptNotification.style.opacity = '0';
+                        promptNotification.style.transform = 'translateX(100%)';
+                        setTimeout(() => {
+                            promptNotification.remove();
+                        }, 300);
+                    }
+                    activeProgressNotifications.downloadPrompt = null;
+                }
+            };
+            
+            closeButton.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dismissNotification();
             });
             
-            // Insert before the download notification to appear on top
-            elements.notifications.insertBefore(promptNotification, notification);
-            activeProgressNotifications.downloadPrompt = promptNotification;
+            // Add padding to content for X button
+            if (content) {
+                content.style.paddingRight = '32px';
+            }
+            
+            notification.appendChild(closeButton);
         }
-    }
-    
-    // Update notification content (get content div, not the whole notification)
-    // The structure is: notification > content div (first child) > text
-    const content = notification.firstElementChild;
-    if (content && content.tagName === 'DIV') {
-        content.textContent = message;
+        
+        // Also add X button to download prompt notification if it exists
+        if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
+            const promptNotification = activeProgressNotifications.downloadPrompt;
+            const promptCloseButton = promptNotification.querySelector('.notification-close');
+            
+            if (!promptCloseButton) {
+                const newPromptCloseButton = document.createElement('button');
+                newPromptCloseButton.className = 'notification-close';
+                newPromptCloseButton.innerHTML = '×';
+                newPromptCloseButton.setAttribute('aria-label', 'Close notification');
+                newPromptCloseButton.style.cssText = `
+                    position: absolute;
+                    top: 8px;
+                    right: 8px;
+                    background: none;
+                    border: none;
+                    font-size: 24px;
+                    line-height: 1;
+                    cursor: pointer;
+                    color: inherit;
+                    opacity: 0.7;
+                    padding: 4px 8px;
+                    transition: opacity 0.2s;
+                `;
+                newPromptCloseButton.addEventListener('mouseenter', () => {
+                    newPromptCloseButton.style.opacity = '1';
+                });
+                newPromptCloseButton.addEventListener('mouseleave', () => {
+                    newPromptCloseButton.style.opacity = '0.7';
+                });
+                
+                newPromptCloseButton.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (promptNotification && promptNotification.parentNode) {
+                        promptNotification.style.opacity = '0';
+                        promptNotification.style.transform = 'translateX(100%)';
+                        setTimeout(() => {
+                            promptNotification.remove();
+                        }, 300);
+                    }
+                    activeProgressNotifications.downloadPrompt = null;
+                });
+                
+                const promptContent = promptNotification.firstElementChild;
+                if (promptContent) {
+                    promptContent.style.paddingRight = '32px';
+                }
+                promptNotification.appendChild(newPromptCloseButton);
+            }
+        }
     } else {
-        // Fallback: if structure is different, update directly
-        const allDivs = notification.querySelectorAll('div');
-        if (allDivs.length > 0) {
-            allDivs[0].textContent = message;
+        // When not complete: Remove X button if present, and auto-dismiss when done
+        if (existingCloseButton) {
+            existingCloseButton.remove();
+            if (content) {
+                content.style.paddingRight = '';
+            }
+        }
+        
+        // Auto-dismiss when all files are done (for sending/downloading notifications)
+        if (current >= total) {
+            setTimeout(() => {
+                if (notification && notification.parentNode) {
+                    notification.remove();
+                }
+                activeProgressNotifications[key] = null;
+                
+                // Also dismiss the download prompt notification if it exists
+                if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
+                    const promptNotification = activeProgressNotifications.downloadPrompt;
+                    if (promptNotification && promptNotification.parentNode) {
+                        promptNotification.remove();
+                    }
+                    activeProgressNotifications.downloadPrompt = null;
+                }
+            }, 2000);
         }
     }
-    
-    // No auto-dismiss - notification persists until user clicks X
-    // Text will change from "Downloading" to "Downloaded" based on isComplete parameter
     
     return notification;
 }
