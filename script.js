@@ -2186,6 +2186,9 @@ const activeProgressNotifications = {
     downloadPrompt: null // Notification about allowing download prompts
 };
 
+// Track auto-dismiss timeouts so we can clear them when notifications are marked as complete
+const notificationDismissTimeouts = new Map(); // key -> timeout ID
+
 // Track bulk download progress
 let bulkDownloadProgress = {
     total: 0,
@@ -2299,6 +2302,12 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
     };
     
     if (isComplete) {
+        // Clear any existing auto-dismiss timeout since notification should persist
+        if (notificationDismissTimeouts.has(key)) {
+            clearTimeout(notificationDismissTimeouts.get(key));
+            notificationDismissTimeouts.delete(key);
+        }
+        
         // When complete: Add X close button if not already present, and persist notification
         if (!existingCloseButton) {
             const closeButton = document.createElement('button');
@@ -2433,11 +2442,19 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
         
         // Auto-dismiss when all files are done (for sending/downloading notifications)
         if (current >= total) {
-            setTimeout(() => {
+            // Clear any existing timeout for this notification
+            if (notificationDismissTimeouts.has(key)) {
+                clearTimeout(notificationDismissTimeouts.get(key));
+                notificationDismissTimeouts.delete(key);
+            }
+            
+            // Set new timeout
+            const timeoutId = setTimeout(() => {
                 if (notification && notification.parentNode) {
                     notification.remove();
                 }
                 activeProgressNotifications[key] = null;
+                notificationDismissTimeouts.delete(key);
                 
                 // Also dismiss the download prompt notification if it exists
                 if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
@@ -2448,6 +2465,8 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                     activeProgressNotifications.downloadPrompt = null;
                 }
             }, 2000);
+            
+            notificationDismissTimeouts.set(key, timeoutId);
         }
     }
     
