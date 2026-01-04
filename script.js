@@ -3491,84 +3491,112 @@ function renderFileGroup(type, peerId = null) {
     // Clear existing content
     content.innerHTML = '';
     
-    // Render each file
-    files.forEach(fileInfo => {
-        const li = createFileListItem(fileInfo, type);
-        content.appendChild(li);
+    // Batch rendering for large file lists to prevent browser freezing
+    // Process files in batches using requestAnimationFrame for smooth rendering
+    const BATCH_SIZE = 50; // Render 50 files per batch
+    let currentIndex = 0;
+    
+    const renderBatch = () => {
+        const batchEnd = Math.min(currentIndex + BATCH_SIZE, files.length);
         
-        const fileId = fileInfo.id;
-        const btn = li.querySelector('button.icon-button[data-file-id="' + fileId + '"]');
+        // Create a document fragment for this batch to minimize reflows
+        const fragment = document.createDocumentFragment();
         
-        // Restore completed state if file was downloaded
-        if (completedFiles.has(fileId)) {
-            li.classList.add('download-completed');
-            if (btn) {
-                btn.classList.add('download-completed');
-                btn.disabled = false;
-                
-                // Check if file was bulk downloaded (in ZIP) or individually downloaded
-                if (bulkDownloadedFiles.has(fileId)) {
-                    // File was in bulk download ZIP - show appropriate message
-                    btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-                    btn.title = 'File included in ZIP';
-                    btn.onclick = () => {
-                        showNotification('This file was downloaded in a ZIP archive. Check your downloads folder.', 'info');
-                    };
-                } else {
-                    // File was individually downloaded - show notification instead of opening
-                    btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-                    btn.title = 'File downloaded - click to open';
+        for (let i = currentIndex; i < batchEnd; i++) {
+            const fileInfo = files[i];
+            const li = createFileListItem(fileInfo, type);
+            
+            const fileId = fileInfo.id;
+            const btn = li.querySelector('button.icon-button[data-file-id="' + fileId + '"]');
+            
+            // Restore completed state if file was downloaded
+            if (completedFiles.has(fileId)) {
+                li.classList.add('download-completed');
+                if (btn) {
+                    btn.classList.add('download-completed');
+                    btn.disabled = false;
                     
-                    // Clear any existing blob URL (shouldn't exist, but clean up if it does)
-                    if (completedFileBlobURLs.has(fileId)) {
-                        const existingValue = completedFileBlobURLs.get(fileId);
-                        // If it's a blob URL (string), revoke it
-                        if (typeof existingValue === 'string') {
-                            URL.revokeObjectURL(existingValue);
-                            activeBlobURLs.delete(existingValue);
-                        }
-                        // Keep the flag (true) to track that file was downloaded
+                    // Check if file was bulk downloaded (in ZIP) or individually downloaded
+                    if (bulkDownloadedFiles.has(fileId)) {
+                        // File was in bulk download ZIP - show appropriate message
+                        btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                        btn.title = 'File included in ZIP';
+                        btn.onclick = () => {
+                            showNotification('This file was downloaded in a ZIP archive. Check your downloads folder.', 'info');
+                        };
                     } else {
-                        // Mark file as downloaded (if not already marked)
-                        completedFileBlobURLs.set(fileId, true);
+                        // File was individually downloaded - show notification instead of opening
+                        btn.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                        btn.title = 'File downloaded - click to open';
+                        
+                        // Clear any existing blob URL (shouldn't exist, but clean up if it does)
+                        if (completedFileBlobURLs.has(fileId)) {
+                            const existingValue = completedFileBlobURLs.get(fileId);
+                            // If it's a blob URL (string), revoke it
+                            if (typeof existingValue === 'string') {
+                                URL.revokeObjectURL(existingValue);
+                                activeBlobURLs.delete(existingValue);
+                            }
+                            // Keep the flag (true) to track that file was downloaded
+                        } else {
+                            // Mark file as downloaded (if not already marked)
+                            completedFileBlobURLs.set(fileId, true);
+                        }
+                        
+                        // Show notification when user clicks to open (file is in Downloads folder)
+                        btn.onclick = () => {
+                            // Track file open click
+                            Analytics.track('file_open_clicked', {
+                                file_size: fileInfo.size,
+                                file_type: Analytics.getFileExtension(fileInfo.name),
+                                device_type: Analytics.getDeviceType()
+                            });
+                            showNotification('Please check your Downloads folder', 'info');
+                        };
                     }
-                    
-                    // Show notification when user clicks to open (file is in Downloads folder)
-                    btn.onclick = () => {
-                        // Track file open click
-                        Analytics.track('file_open_clicked', {
-                            file_size: fileInfo.size,
-                            file_type: Analytics.getFileExtension(fileInfo.name),
-                            device_type: Analytics.getDeviceType()
-                        });
-                        showNotification('Please check your Downloads folder', 'info');
-                    };
                 }
             }
-        }
-        // Restore progress state if this file was downloading
-        else if (progressState.has(fileId) || downloadProgressMap.has(fileId)) {
-            // Check downloadProgressMap again to get the latest progress value
-            // (progress may have updated while header was collapsed)
-            const currentEntry = downloadProgressMap.get(fileId);
-            if (btn) {
-                if (currentEntry) {
-                    // Use the latest progress value from downloadProgressMap
-                    const latestPercent = currentEntry.percent;
-                    btn.disabled = true; // Download in progress
-                    btn.innerHTML = `<span class='download-progress-text' translate="no">${latestPercent}%</span>`;
-                    // Update downloadProgressMap with new button reference so future updateProgress calls work
-                    downloadProgressMap.set(fileId, { button: btn, percent: latestPercent });
-                } else if (progressState.has(fileId)) {
-                    // Fallback: use saved state if downloadProgressMap doesn't have it
-                    const state = progressState.get(fileId);
-                    btn.disabled = state.disabled;
-                    btn.innerHTML = `<span class='download-progress-text' translate="no">${state.percent}%</span>`;
-                    downloadProgressMap.set(fileId, { button: btn, percent: state.percent });
+            // Restore progress state if this file was downloading
+            else if (progressState.has(fileId) || downloadProgressMap.has(fileId)) {
+                // Check downloadProgressMap again to get the latest progress value
+                // (progress may have updated while header was collapsed)
+                const currentEntry = downloadProgressMap.get(fileId);
+                if (btn) {
+                    if (currentEntry) {
+                        // Use the latest progress value from downloadProgressMap
+                        const latestPercent = currentEntry.percent;
+                        btn.disabled = true; // Download in progress
+                        btn.innerHTML = `<span class='download-progress-text' translate="no">${latestPercent}%</span>`;
+                        // Update downloadProgressMap with new button reference so future updateProgress calls work
+                        downloadProgressMap.set(fileId, { button: btn, percent: latestPercent });
+                    } else if (progressState.has(fileId)) {
+                        // Fallback: use saved state if downloadProgressMap doesn't have it
+                        const state = progressState.get(fileId);
+                        btn.disabled = state.disabled;
+                        btn.innerHTML = `<span class='download-progress-text' translate="no">${state.percent}%</span>`;
+                        downloadProgressMap.set(fileId, { button: btn, percent: state.percent });
+                    }
                 }
             }
+            
+            fragment.appendChild(li);
         }
-    });
+        
+        // Append the entire batch at once to minimize reflows
+        content.appendChild(fragment);
+        
+        currentIndex = batchEnd;
+        
+        // Continue with next batch if there are more files
+        if (currentIndex < files.length) {
+            requestAnimationFrame(renderBatch);
+        }
+    };
+    
+    // Start rendering batches
+    if (files.length > 0) {
+        renderBatch();
+    }
 }
 
 // Create file list item (extracted from updateFilesList)
