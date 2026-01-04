@@ -2273,6 +2273,31 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
     // Handle X close button and auto-dismiss based on completion status
     const existingCloseButton = notification.querySelector('.notification-close');
     
+    // Shared dismiss function for both X button and click anywhere
+    const dismissNotification = () => {
+        if (notification && notification.parentNode) {
+            notification.style.opacity = '0';
+            notification.style.transform = 'translateX(100%)';
+            setTimeout(() => {
+                notification.remove();
+            }, 300);
+        }
+        activeProgressNotifications[key] = null;
+        
+        // Also dismiss the download prompt notification if it exists
+        if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
+            const promptNotification = activeProgressNotifications.downloadPrompt;
+            if (promptNotification && promptNotification.parentNode) {
+                promptNotification.style.opacity = '0';
+                promptNotification.style.transform = 'translateX(100%)';
+                setTimeout(() => {
+                    promptNotification.remove();
+                }, 300);
+            }
+            activeProgressNotifications.downloadPrompt = null;
+        }
+    };
+    
     if (isComplete) {
         // When complete: Add X close button if not already present, and persist notification
         if (!existingCloseButton) {
@@ -2293,6 +2318,7 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                 opacity: 0.7;
                 padding: 4px 8px;
                 transition: opacity 0.2s;
+                z-index: 10;
             `;
             closeButton.addEventListener('mouseenter', () => {
                 closeButton.style.opacity = '1';
@@ -2300,31 +2326,6 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
             closeButton.addEventListener('mouseleave', () => {
                 closeButton.style.opacity = '0.7';
             });
-            
-            // Dismiss function
-            const dismissNotification = () => {
-                if (notification && notification.parentNode) {
-                    notification.style.opacity = '0';
-                    notification.style.transform = 'translateX(100%)';
-                    setTimeout(() => {
-                        notification.remove();
-                    }, 300);
-                }
-                activeProgressNotifications[key] = null;
-                
-                // Also dismiss the download prompt notification if it exists
-                if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
-                    const promptNotification = activeProgressNotifications.downloadPrompt;
-                    if (promptNotification && promptNotification.parentNode) {
-                        promptNotification.style.opacity = '0';
-                        promptNotification.style.transform = 'translateX(100%)';
-                        setTimeout(() => {
-                            promptNotification.remove();
-                        }, 300);
-                    }
-                    activeProgressNotifications.downloadPrompt = null;
-                }
-            };
             
             closeButton.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -2339,10 +2340,34 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
             notification.appendChild(closeButton);
         }
         
+        // Add click-to-dismiss functionality (click anywhere on notification)
+        // Remove any existing click handler to avoid duplicates
+        notification.removeEventListener('click', dismissNotification);
+        // Add click handler, but exclude clicks on the X button (handled separately)
+        notification.addEventListener('click', (e) => {
+            // Don't dismiss if clicking on the X button (it has its own handler)
+            if (!e.target.closest('.notification-close')) {
+                dismissNotification();
+            }
+        });
+        notification.style.cursor = 'pointer';
+        
         // Also add X button to download prompt notification if it exists
         if (key === 'downloading' && activeProgressNotifications.downloadPrompt) {
             const promptNotification = activeProgressNotifications.downloadPrompt;
             const promptCloseButton = promptNotification.querySelector('.notification-close');
+            
+            // Shared dismiss function for prompt notification
+            const dismissPromptNotification = () => {
+                if (promptNotification && promptNotification.parentNode) {
+                    promptNotification.style.opacity = '0';
+                    promptNotification.style.transform = 'translateX(100%)';
+                    setTimeout(() => {
+                        promptNotification.remove();
+                    }, 300);
+                }
+                activeProgressNotifications.downloadPrompt = null;
+            };
             
             if (!promptCloseButton) {
                 const newPromptCloseButton = document.createElement('button');
@@ -2362,6 +2387,7 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                     opacity: 0.7;
                     padding: 4px 8px;
                     transition: opacity 0.2s;
+                    z-index: 10;
                 `;
                 newPromptCloseButton.addEventListener('mouseenter', () => {
                     newPromptCloseButton.style.opacity = '1';
@@ -2372,14 +2398,7 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                 
                 newPromptCloseButton.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    if (promptNotification && promptNotification.parentNode) {
-                        promptNotification.style.opacity = '0';
-                        promptNotification.style.transform = 'translateX(100%)';
-                        setTimeout(() => {
-                            promptNotification.remove();
-                        }, 300);
-                    }
-                    activeProgressNotifications.downloadPrompt = null;
+                    dismissPromptNotification();
                 });
                 
                 const promptContent = promptNotification.firstElementChild;
@@ -2388,6 +2407,16 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                 }
                 promptNotification.appendChild(newPromptCloseButton);
             }
+            
+            // Add click-to-dismiss functionality for prompt notification
+            promptNotification.removeEventListener('click', dismissPromptNotification);
+            promptNotification.addEventListener('click', (e) => {
+                // Don't dismiss if clicking on the X button (it has its own handler)
+                if (!e.target.closest('.notification-close')) {
+                    dismissPromptNotification();
+                }
+            });
+            promptNotification.style.cursor = 'pointer';
         }
     } else {
         // When not complete: Remove X button if present, and auto-dismiss when done
@@ -2397,6 +2426,10 @@ function showOrUpdateProgressNotification(key, current, total, operation = 'send
                 content.style.paddingRight = '';
             }
         }
+        
+        // Remove click-to-dismiss when not complete
+        notification.removeEventListener('click', dismissNotification);
+        notification.style.cursor = '';
         
         // Auto-dismiss when all files are done (for sending/downloading notifications)
         if (current >= total) {
