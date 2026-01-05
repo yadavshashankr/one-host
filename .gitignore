@@ -5,13 +5,8 @@
 .DS_Store
 
 # Development and build files
-package.json
 package-lock.json
 node_modules/
-switch-env.js
-deploy.sh
-configure-git.sh
-ENVIRONMENT_SWITCHING.md
 
 # Security files (tokens, keys, etc.)
 .git-token

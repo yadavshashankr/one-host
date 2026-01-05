@@ -1,0 +1,29 @@
+{
+  "name": "one-host",
+  "version": "1.0.0",
+  "description": "Secure P2P File Sharing via WebRTC",
+  "main": "index.html",
+  "scripts": {
+    "dev": "node switch-env.js dev",
+    "prod": "node switch-env.js prod",
+    "pro": "node switch-env.js pro",
+    "deploy:dev": "./deploy.sh dev",
+    "deploy:prod": "./deploy.sh prod",
+    "deploy:pro": "./deploy.sh pro",
+    "start": "python3 -m http.server 8000"
+  },
+  "keywords": [
+    "file-sharing",
+    "p2p",
+    "webrtc",
+    "peer-to-peer",
+    "secure-transfer"
+  ],
+  "author": "Shashank Yadav",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yadavshashankr/one-host.git"
+  },
+  "homepage": "https://one-host.app"
+} 
