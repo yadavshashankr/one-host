@@ -827,6 +827,57 @@ input[type="file"] {
     min-width: 0;
 }
 
+/* Modify file-group-info for received peer headers only */
+.file-group-header[data-group-type="received"] .file-group-info {
+    display: flex;
+    flex-direction: row; /* Change to row for received headers */
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Wrapper for title and summary in received peer headers */
+.file-group-title-summary-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0; /* Allow text truncation for long peer IDs */
+}
+
+/* Keep original column layout for sent files */
+.file-group-header[data-group-type="sent"] .file-group-info {
+    display: flex;
+    flex-direction: column; /* Keep column for sent files */
+    gap: 4px;
+}
+
+/* Peer bulk download button in header - matches global button styling */
+.peer-bulk-download-btn {
+    margin-left: auto;
+    padding: 8px;
+    /* Initially hidden, shown when 2+ files are received (same as global) */
+    display: none;
+    flex-shrink: 0;
+}
+
+.peer-bulk-download-btn .material-icons {
+    color: var(--primary-color);
+}
+
+.peer-bulk-download-btn:hover {
+    background-color: rgba(33, 150, 243, 0.1);
+}
+
+.peer-bulk-download-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.peer-bulk-download-btn:disabled:hover {
+    background-color: transparent;
+}
+
 .file-group-title {
     font-weight: 600;
     font-size: 0.95rem;

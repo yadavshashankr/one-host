@@ -1461,17 +1461,28 @@ async function requestAndDownloadBlob(fileInfo) {
 }
 
 // Function to download all received files that haven't been downloaded yet
-async function downloadAllReceivedFiles() {
+// If peerId is provided, downloads only files from that peer
+// If peerId is null/undefined, downloads files from all peers (existing behavior)
+async function downloadAllReceivedFiles(peerId = null) {
     const receivedList = elements.receivedFilesList;
     if (!receivedList) {
         console.error('Received files list not found');
         return;
     }
 
-    // Collect all files from all peer groups (regardless of expanded/collapsed state)
+    // Collect files - filter by peerId if provided
     const allFiles = [];
-    for (const [peerId, files] of fileGroups.received.entries()) {
-        allFiles.push(...files);
+    if (peerId) {
+        // Download from specific peer
+        const peerFiles = fileGroups.received.get(peerId) || [];
+        allFiles.push(...peerFiles);
+        console.log(`📦 Peer bulk download: Found ${allFiles.length} files from peer ${peerId}`);
+    } else {
+        // Download from all peers (existing behavior)
+        for (const [peerId, files] of fileGroups.received.entries()) {
+            allFiles.push(...files);
+        }
+        console.log(`📦 Bulk download: Found ${allFiles.length} files from ${fileGroups.received.size} peer(s)`);
     }
     
     // Filter out already downloaded files
@@ -1488,7 +1499,7 @@ async function downloadAllReceivedFiles() {
     });
     
     if (undownloadedFiles.length === 0) {
-        showNotification('All files already downloaded', 'info');
+        showNotification(peerId ? `All files from ${peerId} already downloaded` : 'All files already downloaded', 'info');
         return;
     }
     
@@ -1553,11 +1564,18 @@ async function downloadAllReceivedFiles() {
         return;
     }
     
-    console.log(`📦 Bulk download: Found ${fileItems.length} files from ${fileGroups.received.size} peer(s)`);
+    if (!peerId) {
+        console.log(`📦 Bulk download: Found ${fileItems.length} files from ${fileGroups.received.size} peer(s)`);
+    }
 
-    // Disable button during download
-    if (elements.bulkDownloadReceived) {
-        elements.bulkDownloadReceived.disabled = true;
+    // Disable appropriate button(s) during download
+    if (peerId) {
+        const peerBtn = document.getElementById(`bulk-download-peer-${peerId}`);
+        if (peerBtn) peerBtn.disabled = true;
+    } else {
+        if (elements.bulkDownloadReceived) {
+            elements.bulkDownloadReceived.disabled = true;
+        }
     }
 
     // Track bulk download initiation
@@ -1857,12 +1875,19 @@ async function downloadAllReceivedFiles() {
         
         // Note: Download prompt notification will also persist - user can dismiss both manually
         
-        // Re-enable button
-        if (elements.bulkDownloadReceived) {
-            elements.bulkDownloadReceived.disabled = false;
+        // Re-enable appropriate button(s)
+        if (peerId) {
+            const peerBtn = document.getElementById(`bulk-download-peer-${peerId}`);
+            if (peerBtn) {
+                peerBtn.disabled = false;
+            }
+            updatePeerBulkDownloadButtonState(peerId);
+        } else {
+            if (elements.bulkDownloadReceived) {
+                elements.bulkDownloadReceived.disabled = false;
+            }
+            updateBulkDownloadButtonState();
         }
-        // Update button state
-        updateBulkDownloadButtonState();
     }
 }
 
@@ -1902,6 +1927,50 @@ function updateBulkDownloadButtonState() {
     }
     
     console.log(`📊 Bulk download: ${totalFiles} total, ${undownloadedFiles} undownloaded, button ${elements.bulkDownloadReceived.disabled ? 'disabled' : 'enabled'}`);
+    
+    // Also update all peer bulk download buttons (same visibility logic)
+    // This ensures peer buttons stay in sync
+    for (const peerId of fileGroups.received.keys()) {
+        updatePeerBulkDownloadButtonState(peerId);
+    }
+}
+
+// Function to update peer-specific bulk download button state
+// Uses IDENTICAL visibility logic as global bulk download button
+function updatePeerBulkDownloadButtonState(peerId) {
+    if (!peerId) return;
+    
+    const peerBtn = document.getElementById(`bulk-download-peer-${peerId}`);
+    if (!peerBtn) return;
+    
+    const peerFiles = fileGroups.received.get(peerId) || [];
+    const totalFiles = peerFiles.length;
+    
+    // Count undownloaded files for this peer (same logic as global)
+    const undownloadedFiles = peerFiles.filter(f => {
+        const fileId = f.id;
+        // Check tracking Sets (most reliable source of truth)
+        // If file is in either tracking Set, it's downloaded
+        if (completedFileBlobURLs.has(fileId) || bulkDownloadedFiles.has(fileId)) {
+            return false; // File is downloaded
+        }
+        // If not in tracking Sets, file is not downloaded
+        return true;
+    }).length;
+    
+    // IDENTICAL visibility logic as global button:
+    // Hide button if less than 2 files (0 or 1 file), show if 2 or more files
+    if (totalFiles < 2) {
+        peerBtn.style.display = 'none';
+        peerBtn.disabled = true;
+    } else {
+        // Show button when 2 or more files (more than 1 file)
+        peerBtn.style.display = 'flex';
+        // Enable button if there are files to download (disable if all files are downloaded)
+        peerBtn.disabled = undownloadedFiles === 0;
+    }
+    
+    console.log(`📊 Peer bulk download (${peerId}): ${totalFiles} total, ${undownloadedFiles} undownloaded, button ${peerBtn.disabled ? 'disabled' : 'enabled'}, visible: ${totalFiles >= 2}`);
 }
 
 // Handle forwarded blob request (host only)
@@ -3386,15 +3455,48 @@ function createFileGroupHeader(type, peerId = null) {
         const info = document.createElement('div');
         info.className = 'file-group-info';
         
-        const title = document.createElement('span');
-        title.className = 'file-group-title';
-        title.textContent = type === 'sent' ? 'Sent Files' : `Peer: ${peerId || 'Unknown'}`;
-        
-        const summary = document.createElement('span');
-        summary.className = 'file-group-summary';
-        
-        info.appendChild(title);
-        info.appendChild(summary);
+        // For received peer headers, restructure to match section-header pattern
+        if (type === 'received' && peerId) {
+            // Create wrapper for title and summary (left side)
+            const titleSummaryWrapper = document.createElement('div');
+            titleSummaryWrapper.className = 'file-group-title-summary-wrapper';
+            
+            const title = document.createElement('span');
+            title.className = 'file-group-title';
+            title.textContent = `Peer: ${peerId || 'Unknown'}`;
+            
+            const summary = document.createElement('span');
+            summary.className = 'file-group-summary';
+            
+            titleSummaryWrapper.appendChild(title);
+            titleSummaryWrapper.appendChild(summary);
+            
+            // Create bulk download button (right side, initially hidden)
+            const bulkDownloadBtn = document.createElement('button');
+            bulkDownloadBtn.className = 'icon-button bulk-download-btn peer-bulk-download-btn';
+            bulkDownloadBtn.id = `bulk-download-peer-${peerId}`;
+            bulkDownloadBtn.title = `Download all files from ${peerId}`;
+            bulkDownloadBtn.innerHTML = '<span class="material-icons" translate="no">download_for_offline</span>';
+            bulkDownloadBtn.style.display = 'none'; // Initially hidden, same as global button
+            bulkDownloadBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent header toggle
+                downloadAllReceivedFiles(peerId);
+            });
+            
+            info.appendChild(titleSummaryWrapper);
+            info.appendChild(bulkDownloadBtn);
+        } else {
+            // Original structure for sent files
+            const title = document.createElement('span');
+            title.className = 'file-group-title';
+            title.textContent = type === 'sent' ? 'Sent Files' : `Peer: ${peerId || 'Unknown'}`;
+            
+            const summary = document.createElement('span');
+            summary.className = 'file-group-summary';
+            
+            info.appendChild(title);
+            info.appendChild(summary);
+        }
         
         // Expand icon (down arrow when collapsed, up arrow when expanded)
         const expandIcon = document.createElement('span');
@@ -3417,6 +3519,7 @@ function createFileGroupHeader(type, peerId = null) {
     }
     
     // Update summary - formatFileSize returns HTML, so use innerHTML
+    // Handle both old structure (direct summary) and new structure (summary in wrapper)
     const summary = header.querySelector('.file-group-summary');
     if (summary) {
         const fileText = stats.count === 1 ? 'file' : 'files';
@@ -3799,6 +3902,9 @@ function renderAllFileGroups() {
                     if (stats.count > 0) {
                         const header = createFileGroupHeader('received', peerId);
                         receivedList.parentNode.insertBefore(header, receivedList);
+                        // Update peer button state after header creation
+                        // This ensures button visibility matches the logic: visible when 2+ files
+                        updatePeerBulkDownloadButtonState(peerId);
                     }
                 }
             }
