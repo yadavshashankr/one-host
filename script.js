@@ -1897,7 +1897,10 @@ function updateBulkDownloadButtonState() {
         return;
     }
 
-    // Count all received files (from all groups)
+    // Count number of peers with files
+    const peerCount = fileGroups.received.size;
+
+    // Count all received files (from all groups) - still needed for undownloaded count
     let totalFiles = 0;
     let undownloadedFiles = 0;
     
@@ -1916,8 +1919,8 @@ function updateBulkDownloadButtonState() {
         }).length;
     }
     
-    // Hide button if less than 2 files, show if 2 or more
-    if (totalFiles < 2) {
+    // Hide button if less than 2 peers, show if 2 or more peers
+    if (peerCount < 2) {
         elements.bulkDownloadReceived.style.display = 'none';
         elements.bulkDownloadReceived.disabled = true;
     } else {
@@ -1926,7 +1929,7 @@ function updateBulkDownloadButtonState() {
         elements.bulkDownloadReceived.disabled = undownloadedFiles === 0;
     }
     
-    console.log(`📊 Bulk download: ${totalFiles} total, ${undownloadedFiles} undownloaded, button ${elements.bulkDownloadReceived.disabled ? 'disabled' : 'enabled'}`);
+    console.log(`📊 Bulk download: ${peerCount} peer(s), ${totalFiles} total files, ${undownloadedFiles} undownloaded, button ${elements.bulkDownloadReceived.disabled ? 'disabled' : 'enabled'}`);
     
     // Also update all peer bulk download buttons (same visibility logic)
     // This ensures peer buttons stay in sync
