@@ -44,6 +44,10 @@ class BulkDownloadManager {
         // Log initial memory
         this.memoryMonitor.logMemoryStatus('before bulk download');
 
+        // Generate shared timestamp for all ZIP parts in this download session
+        // This ensures all parts from the same bulk download share the same timestamp
+        const sharedTimestamp = this.zipPartManager.getTimestampString();
+
         // Initialize tracking variables
         let totalCompleted = 0;
         let totalErrors = [];
@@ -98,7 +102,8 @@ class BulkDownloadManager {
                     fileItemsArray.length,
                     totalCompleted,
                     showOrUpdateProgressNotification,
-                    downloadBlob
+                    downloadBlob,
+                    sharedTimestamp
                 );
 
                 // Clear memory: delete ZIP instance and revoke blob URLs
@@ -150,7 +155,8 @@ class BulkDownloadManager {
                         fileItemsArray.length,
                         totalCompleted,
                         showOrUpdateProgressNotification,
-                        downloadBlob
+                        downloadBlob,
+                        sharedTimestamp
                     );
 
                     // Clear and reset
@@ -199,7 +205,8 @@ class BulkDownloadManager {
                         fileItemsArray.length,
                         totalCompleted,
                         showOrUpdateProgressNotification,
-                        downloadBlob
+                        downloadBlob,
+                        sharedTimestamp
                     );
 
                     // Clear and reset
@@ -235,7 +242,8 @@ class BulkDownloadManager {
                 fileItemsArray.length,
                 totalCompleted,
                 showOrUpdateProgressNotification,
-                downloadBlob
+                downloadBlob,
+                sharedTimestamp
             );
         }
 
@@ -251,7 +259,7 @@ class BulkDownloadManager {
     }
 
     // Helper method to create and download a ZIP part
-    async createAndDownloadPart(zip, batch, partNumber, totalFiles, totalCompleted, showOrUpdateProgressNotification, downloadBlob) {
+    async createAndDownloadPart(zip, batch, partNumber, totalFiles, totalCompleted, showOrUpdateProgressNotification, downloadBlob, sharedTimestamp = null) {
         // Update progress - creating ZIP part
         if (showOrUpdateProgressNotification) {
             showOrUpdateProgressNotification(
@@ -284,9 +292,9 @@ class BulkDownloadManager {
             const zipSize = this.memoryMonitor.formatBytes(zipBlob.size);
             console.log(`📦 ZIP part ${partNumber} created: ${zipSize} (Memory: ${memoryAfterZip}%)`);
 
-            // Download ZIP part file
+            // Download ZIP part file with shared timestamp
             const totalParts = partNumber; // Will be updated as we create more parts
-            this.zipPartManager.downloadZipPart(zipBlob, partNumber, totalParts, downloadBlob);
+            this.zipPartManager.downloadZipPart(zipBlob, partNumber, totalParts, downloadBlob, sharedTimestamp);
 
             console.log(`✅ ZIP part ${partNumber} downloaded`);
         } catch (error) {

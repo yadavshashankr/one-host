@@ -52,25 +52,37 @@ class ZipPartManager {
         return await zip.generateAsync(finalOptions);
     }
 
+    // Get timestamp string in yyyymmddhhmmss format (local timezone)
+    getTimestampString(date = null) {
+        const now = date || new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        return `${year}${month}${day}${hours}${minutes}${seconds}`;
+    }
+
     // Download a ZIP part
-    downloadZipPart(zipBlob, partNumber, totalParts = null, downloadBlobFn = null) {
+    downloadZipPart(zipBlob, partNumber, totalParts = null, downloadBlobFn = null, sharedTimestamp = null) {
         if (!zipBlob) {
             throw new Error('ZIP blob is required');
         }
 
-        // Generate file name
-        const timestamp = Date.now();
+        // Generate file name with shared timestamp or create new one
+        const timestamp = sharedTimestamp || this.getTimestampString();
         let zipFileName;
         
         if (totalParts && totalParts > 1) {
-            // Multiple parts: files-part-1.zip, files-part-2.zip, etc.
-            zipFileName = `files-part-${partNumber}-${timestamp}.zip`;
+            // Multiple parts: One-Host-1-yyyymmddhhmmss.zip, One-Host-2-yyyymmddhhmmss.zip, etc.
+            zipFileName = `One-Host-${partNumber}-${timestamp}.zip`;
         } else if (partNumber > 1) {
-            // Single part but numbered: files-part-1.zip
-            zipFileName = `files-part-${partNumber}-${timestamp}.zip`;
+            // Single part but numbered: One-Host-1-yyyymmddhhmmss.zip
+            zipFileName = `One-Host-${partNumber}-${timestamp}.zip`;
         } else {
-            // First part or single file: files-timestamp.zip
-            zipFileName = `files-${timestamp}.zip`;
+            // First part or single file: One-Host-yyyymmddhhmmss.zip
+            zipFileName = `One-Host-${timestamp}.zip`;
         }
 
         // Use provided downloadBlob function, or global, or fallback
