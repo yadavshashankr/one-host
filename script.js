@@ -187,6 +187,10 @@ const receivedPeerOrder = []; // Array of peerIds
 // Track previous first peer to detect position changes for auto-scroll
 let previousFirstReceivedPeer = null;
 
+// Track which groups have changed (need header update) - Solution 3 optimization
+// Set of group keys: 'sent' or 'received-{peerId}'
+const changedGroups = new Set();
+
 // Add blob storage for sent files
 const sentFileBlobs = new Map(); // Map to store blobs of sent files
 
@@ -1814,7 +1818,12 @@ async function downloadAllReceivedFiles(peerId = null) {
             }
         });
         
-        // Re-render all groups to update UI state
+        // Re-render all groups to update UI state (full refresh - mark all groups as changed)
+        // Mark all existing groups as changed for full refresh
+        markGroupChanged('sent');
+        for (const peerId of receivedPeerOrder) {
+            markGroupChanged('received', peerId);
+        }
         renderAllFileGroups();
         
         // Re-render all expanded groups to update file items
@@ -3429,6 +3438,52 @@ function getGroupStats(type, peerId = null) {
     return { count, totalSize, files };
 }
 
+// Mark a group as changed when files are added (Solution 3 optimization)
+function markGroupChanged(type, peerId = null) {
+    const key = type === 'sent' ? 'sent' : `received-${peerId}`;
+    changedGroups.add(key);
+}
+
+// Clear change tracking after processing (Solution 3 optimization)
+function clearChangedGroups() {
+    changedGroups.clear();
+}
+
+// Update existing header summary without removing/recreating (Solution 3 optimization)
+function updateGroupHeaderSummary(type, peerId = null) {
+    const headerId = type === 'sent' ? 'sent-files-header' : `received-files-header-${peerId}`;
+    const header = document.getElementById(headerId);
+    
+    if (!header) {
+        // Header doesn't exist, need to create it (new peer)
+        markGroupChanged(type, peerId);
+        return false; // Indicate header needs to be created
+    }
+    
+    // Header exists, just update the summary (fast operation)
+    const stats = getGroupStats(type, peerId);
+    const summary = header.querySelector('.file-group-summary');
+    
+    if (summary) {
+        const fileText = stats.count === 1 ? 'file' : 'files';
+        // formatFileSize returns HTML with span tag, so use innerHTML
+        summary.innerHTML = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
+    }
+    
+    // Update aria-label
+    const ariaLabel = type === 'sent' 
+        ? `Sent Files group, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`
+        : `Files from peer ${peerId}, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`;
+    header.setAttribute('aria-label', ariaLabel);
+    
+    // Update peer bulk download button state (only for this peer)
+    if (type === 'received' && peerId) {
+        updatePeerBulkDownloadButtonState(peerId);
+    }
+    
+    return true; // Indicate header was successfully updated
+}
+
 // Create file group header
 function createFileGroupHeader(type, peerId = null) {
     const stats = getGroupStats(type, peerId);
@@ -3841,7 +3896,7 @@ function createFileListItem(fileInfo, type) {
 
 // Render all file groups
 function renderAllFileGroups() {
-    // Render sent files header
+    // Handle sent files header (Solution 3 optimization: only update if changed)
     const sentList = document.getElementById('sent-files-list');
     if (sentList) {
         const sentSection = sentList.closest('.files-section');
@@ -3850,73 +3905,113 @@ function renderAllFileGroups() {
             const existingHeader = document.getElementById('sent-files-header');
             
             if (stats.count > 0) {
-                // Show header if there are files
-                const sentHeader = createFileGroupHeader('sent');
-                
-                if (!existingHeader) {
-                    // Insert header before the list
-                    sentList.parentNode.insertBefore(sentHeader, sentList);
-                    // Scroll to sent header when first created
-                    scrollHeaderToCenter('sent-files-header');
-    } else {
-                    // Update existing header
-                    const summary = existingHeader.querySelector('.file-group-summary');
-                    if (summary) {
-                        const fileText = stats.count === 1 ? 'file' : 'files';
-                        // formatFileSize returns HTML with span tag, so use innerHTML
-                        summary.innerHTML = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
+                // Only update if changed or doesn't exist
+                if (changedGroups.has('sent') || !existingHeader) {
+                    if (!existingHeader) {
+                        // Create new header
+                        const sentHeader = createFileGroupHeader('sent');
+                        sentList.parentNode.insertBefore(sentHeader, sentList);
+                        scrollHeaderToCenter('sent-files-header');
+                    } else {
+                        // Update existing header summary (fast operation)
+                        updateGroupHeaderSummary('sent');
                     }
                 }
             } else {
                 // Hide header if no files
                 if (existingHeader) {
                     existingHeader.remove();
-                }
-                // Also remove content container if it exists
-                const content = document.getElementById('sent-files-group-content');
-                if (content) {
-                    content.remove();
+                    const content = document.getElementById('sent-files-group-content');
+                    if (content) {
+                        content.remove();
+                    }
                 }
             }
         }
     }
     
-    // Render received files headers (one per peer)
+    // Handle received files headers (Solution 3 optimization: only update changed groups)
     const receivedList = document.getElementById('received-files-list');
     if (receivedList) {
         const receivedSection = receivedList.closest('.files-section');
         if (receivedSection) {
-            // Remove old headers
-            const oldHeaders = receivedList.parentNode.querySelectorAll('.file-group-header[data-group-type="received"]');
-            oldHeaders.forEach(h => h.remove());
-            
-            // Remove old content containers
-            const oldContents = receivedList.parentNode.querySelectorAll('.file-group-content[data-group-type="received"]');
-            oldContents.forEach(c => c.remove());
-            
-            // Create headers for each peer group in order (most recent first)
-            // Only render peers that still have files
+            // Track new first peer for scrolling
             const currentFirstPeer = receivedPeerOrder.length > 0 ? receivedPeerOrder[0] : null;
             const shouldScrollToFirst = currentFirstPeer && currentFirstPeer !== previousFirstReceivedPeer;
             
-            for (const peerId of receivedPeerOrder) {
-                if (fileGroups.received.has(peerId)) {
+            // Strategy 1: Update changed groups only (fast path - Solution 3 optimization)
+            const changedReceivedGroups = Array.from(changedGroups).filter(key => key.startsWith('received-'));
+            if (changedReceivedGroups.length > 0) {
+                for (const groupKey of changedReceivedGroups) {
+                    const peerId = groupKey.replace('received-', '');
                     const stats = getGroupStats('received', peerId);
+                    
                     if (stats.count > 0) {
-                        const header = createFileGroupHeader('received', peerId);
-                        receivedList.parentNode.insertBefore(header, receivedList);
-                        // Update peer button state after header creation
-                        // This ensures button visibility matches the logic: visible when 2+ files
-                        updatePeerBulkDownloadButtonState(peerId);
+                        const headerId = `received-files-header-${peerId}`;
+                        const existingHeader = document.getElementById(headerId);
+                        
+                        if (!existingHeader) {
+                            // New peer: create header
+                            const header = createFileGroupHeader('received', peerId);
+                            receivedList.parentNode.insertBefore(header, receivedList);
+                            updatePeerBulkDownloadButtonState(peerId);
+                        } else {
+                            // Existing peer: just update summary (fast)
+                            updateGroupHeaderSummary('received', peerId);
+                        }
+                    } else {
+                        // Peer has no files: remove header
+                        const headerId = `received-files-header-${peerId}`;
+                        const existingHeader = document.getElementById(headerId);
+                        if (existingHeader) {
+                            existingHeader.remove();
+                            const content = document.getElementById(`received-files-group-content-${peerId}`);
+                            if (content) {
+                                content.remove();
+                            }
+                        }
                     }
                 }
             }
             
-            // Scroll to first peer header if it changed position or is new
+            // Strategy 2: Check for new peers not yet rendered (initial render or full refresh case)
+            // Only check if no changed groups were processed (initial load or full refresh scenario)
+            // This ensures we don't miss any peers that weren't marked as changed
+            if (changedReceivedGroups.length === 0) {
+                for (const peerId of receivedPeerOrder) {
+                    const headerId = `received-files-header-${peerId}`;
+                    const existingHeader = document.getElementById(headerId);
+                    
+                    // Only create if doesn't exist AND has files
+                    if (!existingHeader && fileGroups.received.has(peerId)) {
+                        const stats = getGroupStats('received', peerId);
+                        if (stats.count > 0) {
+                            const header = createFileGroupHeader('received', peerId);
+                            receivedList.parentNode.insertBefore(header, receivedList);
+                            updatePeerBulkDownloadButtonState(peerId);
+                        }
+                    }
+                }
+            }
+            
+            // Strategy 3: Update header order if first peer changed (for scrolling)
+            // Only reorder if first peer changed AND headers need repositioning
             if (shouldScrollToFirst && currentFirstPeer) {
                 const firstHeaderId = `received-files-header-${currentFirstPeer}`;
-                scrollHeaderToCenter(firstHeaderId);
-                previousFirstReceivedPeer = currentFirstPeer;
+                const firstHeader = document.getElementById(firstHeaderId);
+                
+                if (firstHeader) {
+                    // Find current first header in DOM
+                    const currentFirstElement = receivedList.parentNode.querySelector('.file-group-header[data-group-type="received"]');
+                    
+                    // Move to top if not already first
+                    if (currentFirstElement && currentFirstElement !== firstHeader) {
+                        receivedList.parentNode.insertBefore(firstHeader, currentFirstElement);
+                    }
+                    
+                    scrollHeaderToCenter(firstHeaderId);
+                    previousFirstReceivedPeer = currentFirstPeer;
+                }
             } else if (currentFirstPeer) {
                 // Update tracking even if we don't scroll
                 previousFirstReceivedPeer = currentFirstPeer;
@@ -3926,6 +4021,9 @@ function renderAllFileGroups() {
             }
         }
     }
+    
+    // Clear change tracking after processing (Solution 3 optimization)
+    clearChangedGroups();
 }
 
 // Scroll header to center of viewport
@@ -3984,12 +4082,20 @@ function updateFilesList(listElement, fileInfo, type) {
     // Add file to appropriate group
     addFileToGroup(fileInfo, type);
     
-    // Render all groups (headers will be updated)
+    // Mark only the affected group as changed (Solution 3 optimization)
+    // This prevents unnecessary re-rendering of all groups
+    if (type === 'sent') {
+        markGroupChanged('sent');
+    } else if (type === 'received' && fileInfo.sharedBy) {
+        markGroupChanged('received', fileInfo.sharedBy);
+    }
+    
+    // Render only changed groups (optimized)
     renderAllFileGroups();
     
     // Re-render all expanded groups to restore progress state
-    // This is necessary because renderAllFileGroups() removes all content containers
-    // which can break button references for files with active downloads
+    // Note: With Solution 3 optimization, renderAllFileGroups() no longer removes content containers
+    // But we still re-render expanded groups to update file items and restore button references
     
     // Re-render sent files group if expanded
     const sentHeader = document.getElementById('sent-files-header');
