@@ -156,6 +156,7 @@ let transferInProgress = false;
 let isConnectionReady = false;
 let fileChunks = {}; // Initialize fileChunks object
 let keepAliveInterval = null;
+let signalingServerKeepAliveInterval = null; // For Android-specific signaling server keep-alive
 let connectionTimeouts = new Map();
 let isPageVisible = true;
 let autoModeEnabled = false; // Track auto mode state
@@ -573,6 +574,22 @@ async function shareId() {
     }
 }
 
+// Helper function to check if any peer-to-peer connections are active
+function hasActivePeerConnections() {
+    if (!connections || connections.size === 0) {
+        return false;
+    }
+    
+    // Check if at least one peer-to-peer connection is open
+    for (const [peerId, conn] of connections) {
+        if (conn && conn.open) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 // Setup peer event handlers
 function setupPeerHandlers() {
     if (!peer) {
@@ -616,17 +633,32 @@ function setupPeerHandlers() {
 
     peer.on('error', (error) => {
         console.error('PeerJS Error:', error);
+        
+        // Check if peer-to-peer connections are still active
+        const hasActiveConnections = hasActivePeerConnections();
+        
         let errorMessage = 'Connection error';
+        let shouldUpdateStatus = true;
+        let isSignalingServerError = false;
         
         // Handle specific error types
         if (error.type === 'peer-unavailable') {
             errorMessage = 'Peer is not available or does not exist';
         } else if (error.type === 'network') {
             errorMessage = 'Network connection error';
+            isSignalingServerError = true;
         } else if (error.type === 'disconnected') {
-            errorMessage = 'Disconnected from server';
+            // Signaling server disconnected - check if peer-to-peer is still active
+            isSignalingServerError = true;
+            if (hasActiveConnections) {
+                errorMessage = 'Signaling server disconnected (files still transferring)';
+                console.warn('⚠️ Signaling server disconnected, but peer-to-peer connections are active. Files can still transfer.');
+            } else {
+                errorMessage = 'Disconnected from server';
+            }
         } else if (error.type === 'server-error') {
             errorMessage = 'Server error occurred';
+            isSignalingServerError = true;
         } else if (error.type === 'unavailable-id') {
             errorMessage = 'This ID is already taken. Please try another one.';
         } else if (error.type === 'browser-incompatible') {
@@ -637,8 +669,18 @@ function setupPeerHandlers() {
             errorMessage = 'SSL is required for this connection';
         }
         
-        updateConnectionStatus('', errorMessage);
-        // No notification - status change will inform the user
+        // For signaling server errors, only update status if peer-to-peer connections are affected
+        // If peer-to-peer is active, just log a warning instead of updating status
+        if (isSignalingServerError && hasActiveConnections) {
+            // Don't update status - peer-to-peer is still working
+            // Just log the warning (already done above)
+            shouldUpdateStatus = false;
+        }
+        
+        if (shouldUpdateStatus) {
+            updateConnectionStatus('', errorMessage);
+        }
+        // No notification - status change will inform the user (if status was updated)
 
         // If this was during a custom ID setup, revert to auto-generated ID
         if (elements.peerIdEdit && !elements.peerIdEdit.classList.contains('hidden')) {
@@ -648,15 +690,29 @@ function setupPeerHandlers() {
     });
 
     peer.on('disconnected', () => {
-        console.log('Peer disconnected');
-        updateConnectionStatus('', 'Disconnected');
-        isConnectionReady = false;
+        console.log('PeerJS signaling server disconnected');
         
-        // Only try to reconnect if this is not a manual peer ID change
+        // Check if peer-to-peer connections are still active
+        const hasActiveConnections = hasActivePeerConnections();
+        
+        if (hasActiveConnections) {
+            // Signaling server disconnected but peer-to-peer connections are still active
+            // Files can still transfer, so don't update status to "Disconnected"
+            console.warn('⚠️ Signaling server disconnected, but peer-to-peer connections are active. Files can still transfer.');
+            // Keep current connection status (don't update to "Disconnected")
+            // isConnectionReady can remain true since peer-to-peer is working
+        } else {
+            // All connections lost - update status
+            updateConnectionStatus('', 'Disconnected');
+            isConnectionReady = false;
+        }
+        
+        // Only try to reconnect signaling server if this is not a manual peer ID change
+        // Reconnection will happen in background without disrupting active file transfers
         if (!peer._isChangingId) {
             setTimeout(() => {
                 if (peer && !peer.destroyed) {
-                    console.log('Attempting to reconnect...');
+                    console.log('Attempting to reconnect signaling server...');
                     peer.reconnect();
                 }
             }, 3000);
@@ -4188,12 +4244,47 @@ elements.clearPeers.addEventListener('click', () => {
 
 // Initialize connection keep-alive system
 function initConnectionKeepAlive() {
-    // Start keep-alive interval
+    // Start keep-alive interval for peer-to-peer connections
     keepAliveInterval = setInterval(() => {
         if (connections.size > 0 && isPageVisible) {
             sendKeepAlive();
         }
     }, KEEP_ALIVE_INTERVAL);
+    
+    // Android-specific: Keep signaling server connection alive
+    // Android Chrome can aggressively close idle connections, causing "Lost connection to server" errors
+    if (deviceManager && typeof deviceManager.isAndroid === 'function' && deviceManager.isAndroid()) {
+        // Clear any existing interval
+        if (signalingServerKeepAliveInterval) {
+            clearInterval(signalingServerKeepAliveInterval);
+        }
+        
+        // Maintain signaling server connection by periodically checking and reconnecting if needed
+        signalingServerKeepAliveInterval = setInterval(() => {
+            if (peer && !peer.destroyed && isPageVisible) {
+                // Check if peer is disconnected from signaling server but peer-to-peer is active
+                // If so, attempt to reconnect signaling server in background
+                if (!peer.open && hasActivePeerConnections()) {
+                    console.log('🔄 Android: Signaling server disconnected but peer-to-peer active. Attempting background reconnection...');
+                    try {
+                        peer.reconnect();
+                    } catch (error) {
+                        console.warn('⚠️ Failed to reconnect signaling server (non-critical):', error);
+                    }
+                } else if (!peer.open && !hasActivePeerConnections()) {
+                    // No active connections, try to reconnect signaling server
+                    console.log('🔄 Android: Signaling server disconnected. Attempting reconnection...');
+                    try {
+                        peer.reconnect();
+                    } catch (error) {
+                        console.warn('⚠️ Failed to reconnect signaling server:', error);
+                    }
+                }
+            }
+        }, 45000); // Check every 45 seconds (slightly longer than peer-to-peer keep-alive)
+        
+        console.log('✅ Android signaling server keep-alive initialized');
+    }
 
     // Handle page visibility changes
     document.addEventListener('visibilitychange', handleVisibilityChange);
