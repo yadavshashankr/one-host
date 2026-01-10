@@ -146,7 +146,7 @@ const memoryMonitor = new MemoryMonitor();
 const zipPartManager = new ZipPartManager();
 
 // Initialize bulk download manager (class loaded from js/services/bulkDownloadManager.js)
-const bulkDownloadManager = new BulkDownloadManager(memoryMonitor, zipPartManager);
+const bulkDownloadManager = new BulkDownloadManager(memoryMonitor, zipPartManager, deviceManager);
 
 // State
 let peer = null;
@@ -1590,8 +1590,14 @@ async function downloadAllReceivedFiles(peerId = null) {
     });
 
     // Smart ZIP batching: Categorize files into ZIP batches and individual downloads
-    const ZIP_SIZE_LIMIT = 400 * 1024 * 1024; // 400MB in bytes - maximum size of a ZIP batch
-    const INDIVIDUAL_DOWNLOAD_THRESHOLD = 350 * 1024 * 1024; // 350MB in bytes - files above this are downloaded individually
+    // Use same limit as BulkDownloadManager: 300MB for iPadOS Safari tablet, 400MB for others
+    const isIPadOSSafariTablet = deviceManager && typeof deviceManager.isIPadOSSafariTablet === 'function' 
+        ? deviceManager.isIPadOSSafariTablet() 
+        : false;
+    const ZIP_SIZE_LIMIT = isIPadOSSafariTablet 
+        ? 300 * 1024 * 1024  // 300MB for iPadOS Safari tablet
+        : 400 * 1024 * 1024; // 400MB for all other devices
+    const INDIVIDUAL_DOWNLOAD_THRESHOLD = Math.round(ZIP_SIZE_LIMIT * 0.875); // 87.5% of ZIP limit (262.5MB for Safari, 350MB for others)
     const zipBatches = []; // Array of fileInfo arrays for ZIP batches
     const individualFiles = []; // Files to download individually
     let currentBatch = [];
@@ -1611,13 +1617,13 @@ async function downloadAllReceivedFiles(peerId = null) {
         const fileInfo = undownloadedFiles[i];
         const fileSize = fileInfo.size || 0;
         
-        // If file exceeds 350MB, always download individually (not in ZIP)
+        // If file exceeds individual download threshold, always download individually (not in ZIP)
         if (fileSize > INDIVIDUAL_DOWNLOAD_THRESHOLD) {
             individualFiles.push(fileInfo);
             continue;
         }
         
-        // Check if file fits in current batch (batch size limit is still 400MB)
+        // Check if file fits in current batch
         if (currentBatchSize + fileSize <= ZIP_SIZE_LIMIT) {
             // File fits, add to current batch
             currentBatch.push(fileInfo);
@@ -1640,7 +1646,7 @@ async function downloadAllReceivedFiles(peerId = null) {
                 const remainingFile = undownloadedFiles[j];
                 const remainingSize = remainingFile.size || 0;
                 
-                // Skip files that exceed 350MB threshold (they should be downloaded individually)
+                // Skip files that exceed individual download threshold (they should be downloaded individually)
                 if (remainingSize > INDIVIDUAL_DOWNLOAD_THRESHOLD) continue;
                 
                 if (testSize + remainingSize <= ZIP_SIZE_LIMIT) {

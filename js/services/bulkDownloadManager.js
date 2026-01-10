@@ -2,12 +2,36 @@
 // Orchestrates memory-aware bulk file downloads with ZIP part splitting
 
 class BulkDownloadManager {
-    constructor(memoryMonitor, zipPartManager) {
+    constructor(memoryMonitor, zipPartManager, deviceManager = null) {
         this.memoryMonitor = memoryMonitor;
         this.zipPartManager = zipPartManager;
+        this.deviceManager = deviceManager || (typeof DeviceManager !== 'undefined' && window.deviceManager ? window.deviceManager : null);
         this.MEMORY_THRESHOLD = 60; // Start splitting at 60% (more aggressive)
         this.MEMORY_SAFETY_LIMIT = 75; // Hard limit at 75% (before JSZip fails)
-        this.MIN_PART_SIZE = 400 * 1024 * 1024; // Minimum ZIP part size: 400 MB (in bytes)
+        
+        // Check if this is iPadOS Safari tablet for Safari-specific ZIP size limit
+        const isIPadOSSafariTablet = this.checkIfIPadOSSafariTablet();
+        
+        // Set ZIP part size: 300MB for iPadOS Safari tablet, 400MB for all other devices
+        if (isIPadOSSafariTablet) {
+            this.MIN_PART_SIZE = 300 * 1024 * 1024; // 300 MB for iPadOS Safari tablet
+            console.log('🍎 iPadOS Safari tablet detected - using 300MB ZIP part size limit');
+        } else {
+            this.MIN_PART_SIZE = 400 * 1024 * 1024; // 400 MB for all other devices
+        }
+    }
+    
+    // Check if running on iPadOS Safari tablet
+    checkIfIPadOSSafariTablet() {
+        if (this.deviceManager && typeof this.deviceManager.isIPadOSSafariTablet === 'function') {
+            return this.deviceManager.isIPadOSSafariTablet();
+        }
+        // Fallback detection if deviceManager is not available
+        const ua = navigator.userAgent;
+        const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isTablet = (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || /iPad/.test(ua);
+        const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|OPiOS|EdgiOS/i.test(ua);
+        return isIOS && isTablet && isSafari;
     }
 
     // Main method to download all files with memory-aware ZIP part splitting
@@ -74,16 +98,17 @@ class BulkDownloadManager {
             // Check memory before fetching next file
             const memoryUsage = this.memoryMonitor.getMemoryUsagePercent();
             const batchSizeMB = this.memoryMonitor.formatBytes(currentBatchSize);
+            const minPartSizeMB = Math.round(this.MIN_PART_SIZE / (1024 * 1024)); // Convert to MB for display
             
             // Determine if we should create a ZIP part
-            // Priority: Memory safety > Minimum part size (400 MB)
+            // Priority: Memory safety > Minimum part size
             const shouldCreatePart = (
                 // Memory safety checks (highest priority)
                 (memoryUsage !== null && (
                     memoryUsage >= this.MEMORY_THRESHOLD || 
                     (currentBatch.length > 0 && memoryUsage >= this.MEMORY_SAFETY_LIMIT)
                 )) ||
-                // Minimum part size reached (400 MB)
+                // Minimum part size reached
                 (currentBatchSize >= this.MIN_PART_SIZE)
             );
 
@@ -91,7 +116,7 @@ class BulkDownloadManager {
             if (shouldCreatePart && currentBatch.length > 0) {
                 const reason = memoryUsage !== null && memoryUsage >= this.MEMORY_SAFETY_LIMIT ? 'memory safety' :
                               memoryUsage !== null && memoryUsage >= this.MEMORY_THRESHOLD ? 'memory threshold' :
-                              'minimum size reached (400 MB)';
+                              `minimum size reached (${minPartSizeMB} MB)`;
                 console.log(`📦 Creating ZIP part ${partNumber} (${reason}): ${currentBatch.length} files, ${batchSizeMB}`);
                 
                 // Generate and download current ZIP part
@@ -183,18 +208,19 @@ class BulkDownloadManager {
                 // Check if we should create a ZIP part after adding this file
                 const memoryAfterAdd = this.memoryMonitor.getMemoryUsagePercent();
                 const batchSizeAfterAddMB = this.memoryMonitor.formatBytes(currentBatchSize);
+                const minPartSizeMB = Math.round(this.MIN_PART_SIZE / (1024 * 1024)); // Convert to MB for display
                 
                 // Determine if we should create a ZIP part now
                 const shouldCreatePartAfterAdd = (
                     // Memory safety (highest priority)
                     (memoryAfterAdd !== null && memoryAfterAdd >= this.MEMORY_SAFETY_LIMIT) ||
-                    // Minimum part size reached (400 MB)
+                    // Minimum part size reached
                     (currentBatchSize >= this.MIN_PART_SIZE)
                 );
 
                 if (shouldCreatePartAfterAdd) {
                     const reason = memoryAfterAdd !== null && memoryAfterAdd >= this.MEMORY_SAFETY_LIMIT ? 'memory safety' :
-                                  'minimum size reached (400 MB)';
+                                  `minimum size reached (${minPartSizeMB} MB)`;
                     console.log(`📦 Creating ZIP part ${partNumber} after adding ${fileInfo.name} (${reason}): ${currentBatch.length} files, ${batchSizeAfterAddMB}`);
                     
                     // Create ZIP part immediately

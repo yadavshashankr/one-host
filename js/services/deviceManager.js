@@ -180,6 +180,47 @@ class DeviceManager {
         return result;
     }
 
+    // Check if device is iPadOS Safari tablet (specifically for Safari on iPad)
+    isIPadOSSafariTablet() {
+        if (this.cachedResults.isIPadOSSafariTablet !== undefined) {
+            return this.cachedResults.isIPadOSSafariTablet;
+        }
+        
+        // Must be iOS (iPad)
+        if (!this.isIOS()) {
+            this.cachedResults.isIPadOSSafariTablet = false;
+            return false;
+        }
+        
+        // Must be a tablet (not iPhone)
+        if (!this.isTablet()) {
+            this.cachedResults.isIPadOSSafariTablet = false;
+            return false;
+        }
+        
+        // Must be Safari browser (not Chrome or other browsers)
+        // Safari on iPad can report as either:
+        // 1. User agent contains "Safari" but NOT "Chrome" or "CriOS" or "FxiOS" or "OPiOS"
+        // 2. iPad on macOS (iPadOS 13+) reports as MacIntel with touch points > 1
+        const ua = navigator.userAgent;
+        const isSafariUA = /Safari/i.test(ua) && 
+                          !/Chrome|CriOS|FxiOS|OPiOS|EdgiOS/i.test(ua);
+        
+        // iPadOS 13+ detection: MacIntel platform with touch points (Safari only)
+        const isIPadOnMac = navigator.platform === 'MacIntel' && 
+                           navigator.maxTouchPoints > 1 && 
+                           isSafariUA;
+        
+        // Traditional iPad detection: User agent contains "iPad" or viewport-based detection
+        const isIPadUA = /iPad/i.test(ua);
+        
+        // Check if it's actually Safari (not other browsers on iPad)
+        const result = (isIPadUA || isIPadOnMac) && isSafariUA;
+        
+        this.cachedResults.isIPadOSSafariTablet = result;
+        return result;
+    }
+
     // Clear cache (useful for testing or if user agent changes)
     clearCache() {
         this.cachedResults = {};
