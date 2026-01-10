@@ -2281,7 +2281,9 @@ function updateProgress(percent) {
 function addFileToList(name, url, size) {
     const li = document.createElement('li');
     const nameSpan = document.createElement('span');
-    nameSpan.innerHTML = `${name} (${formatFileSize(size)})`;
+    // Escape file name to prevent XSS (formatFileSize returns safe HTML with span tags)
+    const escapedName = escapeHtml(String(name));
+    nameSpan.innerHTML = `${escapedName} (${formatFileSize(size)})`;
     nameSpan.setAttribute('translate', 'no');
     nameSpan.setAttribute('data-no-translate', 'true');
     
@@ -2339,11 +2341,29 @@ let bulkDownloadProgress = {
     isBulkDownload: false
 };
 
+// HTML escape function to prevent XSS attacks
+function escapeHtml(text) {
+    if (typeof text !== 'string') {
+        text = String(text);
+    }
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, (m) => map[m]);
+}
+
 function showNotification(message, type = 'info', duration = 5000) {
     const notification = document.createElement('div');
     notification.className = `notification ${type}`;
-    // Support line breaks by replacing \n with <br> and using innerHTML
-    const formattedMessage = message.charAt(0).toUpperCase() + message.slice(1).replace(/\n/g, '<br>');
+    // Escape HTML to prevent XSS, then support line breaks by replacing \n with <br>
+    // Convert to string first (handles non-string inputs safely)
+    const messageStr = String(message);
+    const escapedMessage = escapeHtml(messageStr);
+    const formattedMessage = escapedMessage.charAt(0).toUpperCase() + escapedMessage.slice(1).replace(/\n/g, '<br>');
     notification.innerHTML = formattedMessage;
     
     elements.notifications.appendChild(notification);
@@ -2622,8 +2642,11 @@ function showTipNotification(message, type = 'info') {
     notification.className = `notification ${type} tip-notification`;
     notification.style.position = 'relative';
     
-    // Support line breaks by replacing \n with <br> and using innerHTML
-    const formattedMessage = message.replace(/\n/g, '<br>');
+    // Escape HTML to prevent XSS, then support line breaks by replacing \n with <br>
+    // Convert to string first (handles non-string inputs safely)
+    const messageStr = String(message);
+    const escapedMessage = escapeHtml(messageStr);
+    const formattedMessage = escapedMessage.replace(/\n/g, '<br>');
     
     // Create X button
     const closeButton = document.createElement('button');
@@ -2713,8 +2736,11 @@ function showAutoModeNotification(message, type = 'success') {
     notification.className = `notification ${type} auto-mode-notification`;
     notification.style.position = 'relative';
     
-    // Support line breaks by replacing \n with <br> and using innerHTML
-    const formattedMessage = message.replace(/\n/g, '<br>');
+    // Escape HTML to prevent XSS, then support line breaks by replacing \n with <br>
+    // Convert to string first (handles non-string inputs safely)
+    const messageStr = String(message);
+    const escapedMessage = escapeHtml(messageStr);
+    const formattedMessage = escapedMessage.replace(/\n/g, '<br>');
     
     // Create X button
     const closeButton = document.createElement('button');
@@ -3532,10 +3558,11 @@ function updateGroupHeaderSummary(type, peerId = null) {
         summary.innerHTML = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
     }
     
-    // Update aria-label
+    // Update aria-label (escape peerId to prevent attribute injection)
+    const escapedPeerId = peerId ? escapeHtml(String(peerId)) : '';
     const ariaLabel = type === 'sent' 
         ? `Sent Files group, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`
-        : `Files from peer ${peerId}, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`;
+        : `Files from peer ${escapedPeerId}, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`;
     header.setAttribute('aria-label', ariaLabel);
     
     // Update peer bulk download button state (only for this peer)
@@ -3647,10 +3674,11 @@ function createFileGroupHeader(type, peerId = null) {
         summary.innerHTML = `${stats.count} ${fileText}, ${formatFileSize(stats.totalSize)}`;
     }
     
-    // Update aria-label
+    // Update aria-label (escape peerId to prevent attribute injection)
+    const escapedPeerId = peerId ? escapeHtml(String(peerId)) : '';
     const ariaLabel = type === 'sent' 
         ? `Sent Files group, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`
-        : `Files from peer ${peerId}, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`;
+        : `Files from peer ${escapedPeerId}, ${stats.count} ${stats.count === 1 ? 'file' : 'files'}, ${formatFileSize(stats.totalSize)}, ${header.getAttribute('data-expanded') === 'true' ? 'expanded' : 'collapsed'}`;
     header.setAttribute('aria-label', ariaLabel);
     
     return header;
