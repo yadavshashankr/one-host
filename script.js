@@ -743,15 +743,7 @@ function initPeerJS() {
         connections.clear();
 
         // Create new peer with auto-generated ID
-        peer = new Peer({
-            debug: 2,
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' }
-                ]
-            }
-        });
+        peer = new Peer(PEER_CONFIG);
 
         setupPeerHandlers();
 
@@ -6296,30 +6288,22 @@ async function saveEditedPeerId() {
         connections.clear();
         
         // Initialize new peer with custom ID
-        peer = new Peer(newPeerId, {
-            debug: 2,
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' }
-                ]
-            }
-        });
+        peer = new Peer(newPeerId, PEER_CONFIG);
         
         setupPeerHandlers();
         
         // Wait for the peer to be ready
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                reject(new Error('Timeout waiting for peer to open'));
+                reject(new Error("Timeout waiting for peer to open"));
             }, 10000); // 10 second timeout
 
-            peer.once('open', () => {
+            peer.once("open", () => {
                 clearTimeout(timeout);
                 resolve();
             });
 
-            peer.once('error', (err) => {
+            peer.once("error", (err) => {
                 clearTimeout(timeout);
                 reject(err);
             });
