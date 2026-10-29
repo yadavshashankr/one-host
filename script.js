@@ -148,6 +148,21 @@ const zipPartManager = new ZipPartManager();
 // Initialize bulk download manager (class loaded from js/services/bulkDownloadManager.js)
 const bulkDownloadManager = new BulkDownloadManager(memoryMonitor, zipPartManager, deviceManager);
 
+// Initialize session state manager (class loaded from js/services/sessionStateManager.js)
+const sessionStateManager = new SessionStateManager();
+
+// Initialize reconnection manager (will be initialized after peer is created)
+let reconnectionManager = null;
+
+// Track previous connection status to avoid duplicate reconnection triggers
+let previousConnectionStatus = '';
+
+// Track previous peer ID to detect when peer reconnects with same ID
+let previousPeerId = null;
+
+// Track if signaling server reconnection is in progress to prevent duplicate attempts
+let isReconnectingSignalingServer = false;
+
 // State
 let peer = null;
 let connections = new Map(); // Map to store multiple connections
@@ -396,6 +411,32 @@ async function initIndexedDB() {
     }
 }
 
+// Peer ID the QR code was last drawn for, so it can be redrawn in the new theme's colours
+let lastQRCodePeerId = null;
+
+// Redraw the QR code when the theme changes (event from js/services/themeManager.js)
+window.addEventListener('themechange', () => {
+    if (lastQRCodePeerId && isQRCodePresent()) {
+        generateQRCode(lastQRCodePeerId);
+    }
+});
+
+// Play the header logo animation on every page load, including refreshes.
+// Browsers can reuse an already-finished GIF from memory on refresh, so it would just show
+// the last frame. A fresh object URL makes the browser treat it as a new image and play it
+// from the start. The GIF opens with a short still pause, so the swap isn't visible.
+(async function restartLogoAnimation() {
+    const logo = document.querySelector('.logo');
+    // Static logo is shown when the device asks for reduced motion
+    if (!logo || !logo.currentSrc.includes('logo-animated.gif')) return;
+    try {
+        const response = await fetch(logo.currentSrc);
+        logo.src = URL.createObjectURL(await response.blob());
+    } catch (error) {
+        console.debug('Logo animation restart skipped:', error);
+    }
+})();
+
 // Generate QR Code
 function generateQRCode(peerId) {
     try {
@@ -422,15 +463,24 @@ function generateQRCode(peerId) {
         }
         
         const qrUrl = `${baseUrl}?peer=${peerId}`;
-        
+
+        // Colours follow the theme: blue on white in light, white on the card colour in dark
+        const rootStyle = getComputedStyle(document.documentElement);
+        const qrModuleColor = rootStyle.getPropertyValue('--qr-module-color').trim() || '#2196F3';
+        const qrBackground = rootStyle.getPropertyValue('--qr-background').trim() || '#ffffff';
+
+        // Drawn at 4x and shown at 164px (see #qrcode in style.css) so square edges stay sharp
+        // on high-density screens. Level M keeps the code less dense than H, so each square is
+        // bigger and easier for a phone camera to read off a screen.
         new QRCode(elements.qrcode, {
             text: qrUrl,
-            width: 128,
-            height: 128,
-            colorDark: '#2196F3',
-            colorLight: '#ffffff',
-            correctLevel: QRCode.CorrectLevel.H
+            width: 800,
+            height: 800,
+            colorDark: qrModuleColor,
+            colorLight: qrBackground,
+            correctLevel: QRCode.CorrectLevel.M
         });
+        lastQRCodePeerId = peerId;
     } catch (error) {
         console.error('QR Code Generation Error:', error);
     }
@@ -600,6 +650,9 @@ function setupPeerHandlers() {
     peer.on('open', (id) => {
         console.log('Peer opened with ID:', id);
         
+        // Reset signaling server reconnection flag when peer opens
+        isReconnectingSignalingServer = false;
+        
         // Get fresh reference to peer ID element
         const peerIdElement = document.getElementById('peer-id');
         if (peerIdElement) {
@@ -609,10 +662,52 @@ function setupPeerHandlers() {
             console.error('❌ Peer ID element not found!');
         }
         
+        // Check if peer reconnected with the same ID (signaling server reconnect)
+        const isSamePeerId = previousPeerId === id;
+        if (isSamePeerId && sessionStateManager && sessionStateManager.getTrackedPeersCount() > 0) {
+            console.log(`🔄 Peer reconnected with same ID (${id}), resetting tried flags for tracked peers...`);
+            // Reset tried flags for all tracked peers when peer reconnects with same ID
+            // This allows reconnection attempts even if previous attempts failed
+            const trackedPeers = sessionStateManager.getAllTrackedPeers();
+            trackedPeers.forEach(peerId => {
+                sessionStateManager.resetPeerTried(peerId);
+            });
+        }
+        
+        // Update previous peer ID
+        previousPeerId = id;
+        
         updateConnectionStatus('', 'Ready to connect');
         generateQRCode(id);
         initShareButton();
         updateEditButtonState();
+        
+        // Always attempt reconnection when peer reconnects with same ID and we have tracked peers
+        // This works like the connect button - always tries to establish new connections
+        if (sessionStateManager && sessionStateManager.getSessionAvailable() && 
+            sessionStateManager.getTrackedPeersCount() > 0 &&
+            reconnectionManager) {
+            
+            // If reconnection is in progress, reset it first (peer reconnected, so we should retry)
+            if (reconnectionManager.isReconnectingInProgress()) {
+                console.log('🔄 Resetting reconnection state (peer reconnected with same ID)');
+                reconnectionManager.resetReconnectionState();
+            }
+            
+            // Get all tracked peers (not just untried ones) when peer reconnects with same ID
+            // This ensures we always try to reconnect, even if previous attempts failed
+            const peersToReconnect = isSamePeerId ? 
+                sessionStateManager.getAllTrackedPeers() : 
+                sessionStateManager.getUntriedPeers();
+            
+            if (peersToReconnect.length > 0) {
+                console.log(`🔄 Peer ${isSamePeerId ? 'reconnected with same ID' : 'opened'}, triggering reconnection to ${peersToReconnect.length} tracked peer(s)...`);
+                // Small delay to ensure status update completes first
+                setTimeout(() => {
+                    reconnectionManager.reconnectToPeers(peersToReconnect);
+                }, 500);
+            }
+        }
         
         // Retrieve private IP and update auto mode button visibility after peer ID is generated
         // This ensures DOM is ready and peer is initialized
@@ -682,6 +777,25 @@ function setupPeerHandlers() {
         }
         // No notification - status change will inform the user (if status was updated)
 
+        // For signaling server errors, immediately attempt to reconnect
+        // Don't wait for peer.on('disconnected') - reconnect right away
+        if (isSignalingServerError && !peer._isChangingId && peer && !peer.destroyed && !isReconnectingSignalingServer) {
+            // Show "Connecting..." status immediately
+            if (!hasActiveConnections) {
+                updateConnectionStatus('connecting', 'Connecting...');
+            }
+            // Set flag to prevent duplicate reconnection attempts
+            isReconnectingSignalingServer = true;
+            // Attempt reconnection immediately (no delay)
+            console.log('🔄 Signaling server error detected, attempting immediate reconnection...');
+            setTimeout(() => {
+                if (peer && !peer.destroyed && !peer._isChangingId) {
+                    console.log('Attempting to reconnect signaling server...');
+                    peer.reconnect();
+                }
+            }, 100); // Small delay to ensure error handling completes
+        }
+
         // If this was during a custom ID setup, revert to auto-generated ID
         if (elements.peerIdEdit && !elements.peerIdEdit.classList.contains('hidden')) {
             cancelEditingPeerId();
@@ -709,13 +823,20 @@ function setupPeerHandlers() {
         
         // Only try to reconnect signaling server if this is not a manual peer ID change
         // Reconnection will happen in background without disrupting active file transfers
-        if (!peer._isChangingId) {
+        // Note: Reconnection may have already been triggered in peer.on('error'), so check flag
+        if (!peer._isChangingId && peer && !peer.destroyed && !isReconnectingSignalingServer) {
+            // Show "Connecting..." status if no active connections
+            if (!hasActiveConnections) {
+                updateConnectionStatus('connecting', 'Connecting...');
+            }
+            // Set flag to prevent duplicate reconnection attempts
+            isReconnectingSignalingServer = true;
             setTimeout(() => {
-                if (peer && !peer.destroyed) {
+                if (peer && !peer.destroyed && !peer._isChangingId) {
                     console.log('Attempting to reconnect signaling server...');
                     peer.reconnect();
                 }
-            }, 3000);
+            }, 100); // Small delay to avoid duplicate reconnection attempts
         }
     });
 
@@ -745,12 +866,49 @@ function initPeerJS() {
         // Create new peer with auto-generated ID
         peer = new Peer(PEER_CONFIG);
 
+        // Initialize reconnection manager after peer is created
+        if (!reconnectionManager) {
+            reconnectionManager = new ReconnectionManager(
+                sessionStateManager,
+                peer,
+                connections,
+                setupConnectionHandlers,
+                updateConnectionStatus,
+                elements,
+                CONNECTION_TIMEOUT
+            );
+            console.log('✅ Reconnection manager initialized');
+        } else {
+            // Update peer reference if manager already exists
+            reconnectionManager.updatePeerReference(peer);
+        }
+
         setupPeerHandlers();
 
     } catch (error) {
         console.error('PeerJS Initialization Error:', error);
         updateConnectionStatus('', 'Initialization failed');
         showNotification('Failed to initialize peer connection', 'error');
+    }
+}
+
+// Broadcast our peer ID and connected-peer list to all connections (for full-mesh tracking).
+// Called when connections change (add/remove) so others can track and reconnect to 3+ peers.
+function broadcastPeerList() {
+    if (!peer || !peer.id || !connections || connections.size === 0) return;
+    const payload = {
+        type: MESSAGE_TYPES.CONNECTION_NOTIFICATION,
+        peerId: peer.id,
+        connectedPeerIds: Array.from(connections.keys())
+    };
+    for (const [peerId, c] of connections) {
+        if (c && c.open) {
+            try {
+                c.send(payload);
+            } catch (err) {
+                console.warn('Failed to broadcast peer list to', peerId, err);
+            }
+        }
     }
 }
 
@@ -762,6 +920,11 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
         elements.fileTransferSection.classList.remove('hidden');
         
+        // Track this peer for reconnection
+        if (sessionStateManager) {
+            sessionStateManager.addTrackedPeer(conn.peer);
+        }
+        
         // Activate screen wake when connection is established
         screenWake.activateFromConnection();
         
@@ -772,6 +935,12 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
             autoModeNotification.remove();
             autoModeNotification = null;
         }
+        
+        // NOTE: Do NOT dismiss wake lock tip notification on connection success.
+        // The wake lock tip notification should only be dismissed when the user:
+        // 1. Clicks the X button, or
+        // 2. Clicks anywhere else on the page (outside the notification)
+        // The dismiss functionality is already implemented in showTipNotification().
         
         // Scroll to file transfer section on first connection
         if (connections.size === 1 && elements.fileTransferSection) {
@@ -808,11 +977,8 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
             connectionTimeouts.delete(conn.peer);
         }
         
-        // Send a connection notification to the other peer
-        conn.send({
-            type: 'connection-notification',
-            peerId: peer.id
-        });
+        // Broadcast peer list to all connections (including this one) so 3+ peers are tracked
+        broadcastPeerList();
     });
 
     conn.on('data', async (data) => {
@@ -826,6 +992,21 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                     break;
                 case 'connection-notification':
                     updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
+                    // Track sender and their connected peers for full-mesh reconnection (3+ devices)
+                    if (sessionStateManager && data.peerId) {
+                        if (data.peerId !== peer.id) {
+                            sessionStateManager.addTrackedPeer(data.peerId);
+                        }
+                        const ids = data.connectedPeerIds;
+                        if (Array.isArray(ids)) {
+                            const senderId = conn.peer;
+                            for (const id of ids) {
+                                if (id && id !== peer.id && id !== senderId) {
+                                    sessionStateManager.addTrackedPeer(id);
+                                }
+                            }
+                        }
+                    }
                     break;
                 case 'keep-alive':
                     // Handle keep-alive message
@@ -840,6 +1021,51 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                 case 'keep-alive-response':
                     // Handle keep-alive response
                     console.log(`Keep-alive response received from peer ${conn.peer}`);
+                    // If we received a keep-alive response, the connection is healthy
+                    // Cancel any pending connection error timeouts for this peer
+                    if (connectionTimeouts.has(conn.peer)) {
+                        clearTimeout(connectionTimeouts.get(conn.peer));
+                        connectionTimeouts.delete(conn.peer);
+                        console.log(`✅ Cancelled connection error timeout for ${conn.peer} (keep-alive confirmed healthy)`);
+                    }
+                    
+                    // Reset the peer's tried flag if it was marked as tried
+                    if (sessionStateManager && sessionStateManager.getTrackedPeersCount() > 0) {
+                        const trackedPeers = sessionStateManager.getAllTrackedPeers();
+                        if (trackedPeers.includes(conn.peer)) {
+                            // Connection is healthy, reset tried flag
+                            sessionStateManager.resetPeerTried(conn.peer);
+                            // Ensure connection is in the connections map
+                            if (!connections.has(conn.peer)) {
+                                connections.set(conn.peer, conn);
+                                console.log(`✅ Added connection to map for ${conn.peer} (keep-alive confirmed)`);
+                            }
+                            // If we're in reconnection mode and this peer was marked as tried, update status
+                            if (reconnectionManager && reconnectionManager.isReconnectingInProgress()) {
+                                // Check if we have active connections
+                                if (connections.size > 0) {
+                                    // Reset reconnection flag and update status
+                                    reconnectionManager.resetReconnectionState();
+                                    updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
+                                    // Ensure file transfer section is visible
+                                    if (elements.fileTransferSection) {
+                                        elements.fileTransferSection.classList.remove('hidden');
+                                        console.log('📁 File transfer section made visible (connection confirmed via keep-alive)');
+                                    }
+                                    console.log(`✅ Connection confirmed healthy via keep-alive for ${conn.peer}, updating status and stopping reconnection`);
+                                }
+                            } else {
+                                // Not in reconnection mode, but ensure status is correct
+                                if (connections.size > 0) {
+                                    updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
+                                    // Ensure file transfer section is visible
+                                    if (elements.fileTransferSection) {
+                                        elements.fileTransferSection.classList.remove('hidden');
+                                    }
+                                }
+                            }
+                        }
+                    }
                     break;
                 case 'health-check':
                     // Handle health check message
@@ -861,7 +1087,7 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                     connections.delete(conn.peer);
                     updateConnectionStatus(connections.size > 0 ? 'connected' : '', 
                         connections.size > 0 ? `Connected to peer(s) : ${connections.size}` : 'Disconnected');
-                    // No notification - status change will inform the user
+                    broadcastPeerList();
                     break;
                 case MESSAGE_TYPES.FORCE_DISABLE_AUTO_MODE:
                     await handleForceDisableAutoMode(data, conn);
@@ -972,14 +1198,39 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         
         // Don't immediately show error notification - it might be temporary
         // Only attempt reconnection if it persists for a while
+        // But first check if keep-alive is still working (connection might be healthy)
         if (!connectionTimeouts.has(conn.peer)) {
             const timeout = setTimeout(() => {
-                console.log(`⚠️ Connection error persisted for ${conn.peer}, attempting reconnection...`);
-                updateConnectionStatus('', 'Connection error');
+                // Before showing error, check if connection is actually dead
+                // If keep-alive is still working, don't show error
+                const isConnectionHealthy = checkConnectionHealth(conn, conn.peer);
                 
-                // Attempt reconnection
-                console.log(`Attempting to reconnect to ${conn.peer} after error...`);
-                reconnectToPeer(conn.peer);
+                if (!isConnectionHealthy && (!conn.open || !connections.has(conn.peer))) {
+                    console.log(`⚠️ Connection error persisted for ${conn.peer}, attempting reconnection...`);
+                    // Only show error if reconnection manager is not already handling it
+                    if (!reconnectionManager || !reconnectionManager.isReconnectingInProgress()) {
+                        updateConnectionStatus('', 'Connection error');
+                    }
+                    
+                    // Attempt reconnection via reconnection manager if session is available
+                    if (sessionStateManager && sessionStateManager.getSessionAvailable()) {
+                        const untriedPeers = sessionStateManager.getUntriedPeers();
+                        if (untriedPeers.length > 0 && reconnectionManager) {
+                            console.log(`Attempting to reconnect to ${conn.peer} via reconnection manager...`);
+                            reconnectionManager.reconnectToPeers(untriedPeers);
+                        }
+                    } else {
+                        // Fallback to old reconnection method
+                        console.log(`Attempting to reconnect to ${conn.peer} after error...`);
+                        reconnectToPeer(conn.peer);
+                    }
+                } else {
+                    console.log(`✅ Connection to ${conn.peer} is actually healthy, not showing error`);
+                    // Connection is healthy, update status if needed
+                    if (connections.size > 0) {
+                        updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
+                    }
+                }
                 connectionTimeouts.delete(conn.peer);
             }, 8000); // Wait 8 seconds before attempting reconnection
             
@@ -1013,9 +1264,16 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
         // Update status if no more connections
         if (connections.size === 0) {
             updateConnectionStatus('', 'Ready to connect');
-            elements.fileTransferSection.classList.add('hidden');
+            // Don't hide file transfer section here - let updateConnectionStatus handle it
+            // It will check if reconnection is in progress before hiding
+            if (!reconnectionManager || !reconnectionManager.isReconnectingInProgress()) {
+                if (elements.fileTransferSection) {
+                    elements.fileTransferSection.classList.add('hidden');
+                }
+            }
         } else {
             updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
+            broadcastPeerList();
         }
     });
 }
@@ -1481,6 +1739,17 @@ async function requestAndDownloadBlob(fileInfo) {
                     clearTimeout(timeout);
                     connections.set(fileInfo.sharedBy, conn);
                     setupConnectionHandlers(conn);
+                    // Update status immediately when connection is established via file download
+                    updateConnectionStatus('connected', `Connected to peer(s) : ${connections.size}`);
+                    // Ensure file transfer section is visible
+                    if (elements.fileTransferSection) {
+                        elements.fileTransferSection.classList.remove('hidden');
+                        console.log('📁 File transfer section made visible (connection established via file download)');
+                    }
+                    // Track this peer for reconnection
+                    if (sessionStateManager) {
+                        sessionStateManager.addTrackedPeer(fileInfo.sharedBy);
+                    }
                     resolve();
                 });
 
@@ -2702,15 +2971,20 @@ function showTipNotification(message, type = 'info') {
     });
     
     // Handle document click (anywhere on page, outside notification)
+    // Only dismiss on actual user clicks, not programmatic or system events
     documentClickHandler = (e) => {
         // Don't dismiss if clicking inside the notification
         if (!notification.contains(e.target)) {
-            dismissNotification();
+            // Only dismiss if this is a genuine user click (not a programmatic event)
+            // Check if the event is trusted (user-initiated) and is a mouse/touch click
+            if (e.isTrusted && (e.type === 'click' || e.type === 'mousedown' || e.type === 'touchstart')) {
+                dismissNotification();
+            }
         }
     };
     
     // Add document click listener (use capture phase to catch early)
-    // Small delay to prevent immediate dismissal on page load
+    // Small delay to prevent immediate dismissal on page load or connection events
     setTimeout(() => {
         if (!isDismissed) {
             document.addEventListener('click', documentClickHandler, true);
@@ -2811,7 +3085,10 @@ function resetConnection() {
     transferInProgress = false;
     fileQueue = []; // Clear the file queue
     isProcessingQueue = false;
-    elements.fileTransferSection.classList.add('hidden');
+    // Don't hide file transfer section if reconnection is in progress
+    if (!reconnectionManager || !reconnectionManager.isReconnectingInProgress()) {
+        elements.fileTransferSection.classList.add('hidden');
+    }
     elements.transferProgress.classList.add('hidden');
     elements.progress.style.width = '0%';
     elements.transferInfo.style.display = 'none';
@@ -3079,6 +3356,9 @@ function init() {
     if (!checkBrowserSupport()) {
         return;
     }
+
+    // Load session state from sessionStorage (before initializing peer)
+    sessionStateManager.loadState();
 
     initPeerJS();
     initIndexedDB();
@@ -3377,8 +3657,8 @@ style.textContent = `
     }
     
     .notification.info {
-        background-color: #e0f2fe;
-        color: #0369a1;
+        background-color: var(--info-background);
+        color: var(--info-text-color);
     }
     
     @keyframes slideIn {
@@ -3396,20 +3676,110 @@ document.head.appendChild(style);
 
 // Add function to update connection status
 function updateConnectionStatus(status, message) {
+    const normalizedMessage = message ? message.charAt(0).toUpperCase() + message.slice(1) : '';
+    const normalizedMessageLower = normalizedMessage.toLowerCase();
+    
+    // Detect when status changes to "Connected to Peer(s) : X"
+    if (normalizedMessageLower.includes('connected to peer')) {
+        if (sessionStateManager) {
+            sessionStateManager.setSessionAvailable(true);
+        }
+    }
+    
+    // Detect when status changes to "Disconnected" or "Ready to connect"
+    // and trigger reconnection if sessionAvailable is true
+    // Only trigger once per transition (avoid duplicate triggers)
+    const wasConnected = previousConnectionStatus && previousConnectionStatus.toLowerCase().includes('connected to peer');
+    const wasDisconnected = previousConnectionStatus && previousConnectionStatus.toLowerCase().includes('disconnected');
+    const wasConnecting = previousConnectionStatus && previousConnectionStatus.toLowerCase().includes('connecting');
+    const isDisconnectedOrReady = normalizedMessageLower.includes('disconnected') || 
+                                   normalizedMessageLower.includes('ready to connect');
+    
+    // Trigger reconnection if:
+    // 1. Session is available (we were connected before)
+    // 2. Status is disconnected/ready
+    // 3. Either:
+    //    - We were connected before (wasConnected), OR
+    //    - This is the first status update after peer opens (previousConnectionStatus is empty) AND we have tracked peers, OR
+    //    - Previous status was "Disconnected" (signaling server disconnect) AND current status is "Ready to connect" (peer reconnected) AND we have tracked peers AND no active connections
+    // 4. We're not coming from "Connecting..." state (to avoid re-triggering after reconnection completes)
+    // 5. Reconnection is not already in progress
+    const isFirstStatusAfterPeerOpen = !previousConnectionStatus && sessionStateManager && sessionStateManager.getTrackedPeersCount() > 0;
+    
+    // Check if we have any actually open/working connections
+    const hasActiveConnections = connections && Array.from(connections.values()).some(conn => conn && conn.open);
+    
+    const isReconnectingAfterDisconnect = wasDisconnected && 
+                                          normalizedMessageLower.includes('ready to connect') && 
+                                          sessionStateManager && 
+                                          sessionStateManager.getTrackedPeersCount() > 0 &&
+                                          !hasActiveConnections; // Only trigger if no active connections (closed connections don't count)
+    
+    const shouldTriggerReconnection = sessionStateManager && sessionStateManager.getSessionAvailable() && 
+        isDisconnectedOrReady && 
+        (wasConnected || isFirstStatusAfterPeerOpen || isReconnectingAfterDisconnect) && // Allow reconnection if we were connected OR if this is first status after peer opens with tracked peers OR if reconnecting after disconnect
+        !wasConnecting && // Don't trigger if we're coming from "Connecting..." state
+        !reconnectionManager?.isReconnectingInProgress();
+    
+    if (shouldTriggerReconnection) {
+        // Get untried peers
+        const untriedPeers = sessionStateManager.getUntriedPeers();
+        
+        // Check if we have untried peers to reconnect to
+        if (untriedPeers.length > 0) {
+            console.log(`🔄 Status changed from "${previousConnectionStatus || 'initial'}" to "${normalizedMessage}", reconnecting to ${untriedPeers.length} untried peer(s)...`);
+            // Immediately reconnect (no checks, just connect)
+            if (reconnectionManager) {
+                reconnectionManager.reconnectToPeers(untriedPeers);
+            }
+        } else if (sessionStateManager.getTrackedPeersCount() > 0) {
+            console.log('ℹ️ All tracked peers have been tried, skipping reconnection');
+        } else {
+            console.log('ℹ️ No tracked peers to reconnect to');
+        }
+    }
+    
+    // Update previous status
+    previousConnectionStatus = normalizedMessage;
+    
     elements.statusDot.className = 'status-dot ' + (status || '');
-    elements.statusText.textContent = message.charAt(0).toUpperCase() + message.slice(1);  // Ensure sentence case
+    elements.statusText.textContent = normalizedMessage;
     
     // Hide file transfer section when status is "Ready to connect"
-    if (message && message.toLowerCase() === 'ready to connect') {
-        if (elements.fileTransferSection) {
-            elements.fileTransferSection.classList.add('hidden');
-            console.log('📁 File transfer section hidden (status: Ready to connect)');
+    // BUT don't hide if we're reconnecting OR if connections actually exist
+    if (message && normalizedMessageLower === 'ready to connect') {
+        // Check if we have active connections
+        const hasActiveConnections = connections && connections.size > 0 && 
+            Array.from(connections.values()).some(conn => conn && conn.open);
+        
+        // Only hide if:
+        // 1. We're not in reconnection mode, AND
+        // 2. We don't have active connections
+        if ((!reconnectionManager || !reconnectionManager.isReconnectingInProgress()) && !hasActiveConnections) {
+            if (elements.fileTransferSection) {
+                elements.fileTransferSection.classList.add('hidden');
+                console.log('📁 File transfer section hidden (status: Ready to connect, no active connections)');
+            }
+        } else {
+            if (hasActiveConnections) {
+                console.log('📁 File transfer section kept visible (active connections exist)');
+            } else {
+                console.log('📁 File transfer section kept visible (reconnection in progress)');
+            }
         }
         
         // If auto mode is enabled, check WiFi and disable/hide if not detected
         if (autoModeEnabled) {
             console.log('🔍 Auto mode is enabled, checking WiFi status...');
             checkAndDisableAutoModeIfNoWiFi();
+        }
+    }
+    
+    // Ensure file transfer section is visible when status is "Connected to peer(s) : X"
+    if (normalizedMessageLower.includes('connected to peer')) {
+        if (elements.fileTransferSection && connections && connections.size > 0) {
+            elements.fileTransferSection.classList.remove('hidden');
+            console.log(`📁 File transfer section made visible (${connections.size} peer(s) connected)`);
         }
     }
     
@@ -3711,6 +4081,9 @@ function toggleFileGroup(type, peerId = null) {
         
         // Insert after header
         header.parentNode.insertBefore(content, header.nextSibling);
+    } else if (header.nextElementSibling !== content) {
+        // Keep the list directly under its own header (headers can be reordered)
+        header.after(content);
     }
     
     if (newExpanded) {
@@ -4086,9 +4459,14 @@ function renderAllFileGroups() {
                     // Find current first header in DOM
                     const currentFirstElement = receivedList.parentNode.querySelector('.file-group-header[data-group-type="received"]');
                     
-                    // Move to top if not already first
+                    // Move to top if not already first, taking its file list along
+                    // (otherwise the list stays under another peer's header and expands there)
                     if (currentFirstElement && currentFirstElement !== firstHeader) {
+                        const firstContent = document.getElementById(`received-files-group-content-${currentFirstPeer}`);
                         receivedList.parentNode.insertBefore(firstHeader, currentFirstElement);
+                        if (firstContent) {
+                            firstHeader.after(firstContent);
+                        }
                     }
                     
                     scrollHeaderToCenter(firstHeaderId);
@@ -5836,6 +6214,11 @@ async function switchToAutoMode() {
             }
         });
         
+        // Update reconnection manager peer reference
+        if (reconnectionManager) {
+            reconnectionManager.updatePeerReference(peer);
+        }
+        
         setupPeerHandlers();
         
         // Wait for the peer to be ready
@@ -5990,6 +6373,11 @@ async function switchFromAutoMode() {
                 ]
             }
         });
+        
+        // Update reconnection manager peer reference
+        if (reconnectionManager) {
+            reconnectionManager.updatePeerReference(peer);
+        }
         
         setupPeerHandlers();
         
@@ -6289,6 +6677,11 @@ async function saveEditedPeerId() {
         
         // Initialize new peer with custom ID
         peer = new Peer(newPeerId, PEER_CONFIG);
+        
+        // Update reconnection manager peer reference
+        if (reconnectionManager) {
+            reconnectionManager.updatePeerReference(peer);
+        }
         
         setupPeerHandlers();
         

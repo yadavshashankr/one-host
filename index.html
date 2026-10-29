@@ -12,11 +12,11 @@
   <meta name="keywords" content="file sharing, p2p, webrtc, peer to peer, secure file transfer">
 
   <!-- Favicon -->
-  <link rel="icon" type="image/svg+xml" href="assets/tablogo.svg">
-  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="assets/favicon/apple-touch-icon.png">
-  <link rel="mask-icon" href="assets/tablogo.svg" color="#2196F3">
+  <link rel="icon" type="image/svg+xml" href="assets/tablogo.svg?v=b4509d5">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon/favicon-32x32.png?v=b4509d5">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon/favicon-16x16.png?v=b4509d5">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/favicon/apple-touch-icon.png?v=b4509d5">
+  <link rel="mask-icon" href="assets/tablogo.svg?v=b4509d5" color="#2196F3">
   <meta name="msapplication-TileColor" content="#2196F3">
   <meta name="theme-color" content="#2196F3">
 
@@ -57,7 +57,17 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="One-Host">
 
-  <link rel="stylesheet" href="style.css?v=f3ba878" />
+  <!-- Apply saved theme before styles load to avoid a flash (see js/services/themeManager.js) -->
+  <script>
+    try {
+      // Per-tab choice only; new tabs follow the device setting
+      var savedTheme = sessionStorage.getItem('one-host-theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') {
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      }
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="style.css?v=b4509d5" />
   <link rel="manifest" href="manifest.json">
   
   <!-- Google Analytics -->
@@ -70,17 +80,23 @@
   </script>
   
   <!-- Configuration -->
-  <script src="js/config/constants.js?v=f3ba878"></script>
+  <script src="js/config/constants.js?v=b4509d5"></script>
   <!-- Screen Wake Manager -->
-  <script src="js/services/screenWake.js?v=ae4c968"></script>
+  <script src="js/services/screenWake.js?v=b4509d5"></script>
   <!-- Device Manager -->
-  <script src="js/services/deviceManager.js?v=ae4c968"></script>
+  <script src="js/services/deviceManager.js?v=b4509d5"></script>
   <!-- Memory Monitor -->
-  <script src="js/services/memoryMonitor.js?v=ae4c968"></script>
+  <script src="js/services/memoryMonitor.js?v=b4509d5"></script>
   <!-- ZIP Part Manager -->
-  <script src="js/services/zipPartManager.js?v=ae4c968"></script>
+  <script src="js/services/zipPartManager.js?v=b4509d5"></script>
   <!-- Bulk Download Manager -->
-  <script src="js/services/bulkDownloadManager.js?v=ae4c968"></script>
+  <script src="js/services/bulkDownloadManager.js?v=b4509d5"></script>
+  <!-- Session State Manager -->
+  <script src="js/services/sessionStateManager.js?v=b4509d5"></script>
+  <!-- Reconnection Manager -->
+  <script src="js/services/reconnectionManager.js?v=b4509d5"></script>
+  <!-- Theme Manager -->
+  <script src="js/services/themeManager.js?v=b4509d5"></script>
   <!-- Dynamic Meta Tags -->
   <script>
     // Update meta tags based on environment
@@ -110,7 +126,7 @@
     });
   </script>
   <!-- PeerJS for WebRTC -->
-  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js" integrity="sha384-PMNj1TmCgXfW24/rfIyxYSAWwj2mffkMfguUWv08iNFcy0kTC0JN7E/tE+pJ7+fa" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js" integrity="sha384-x0YgkOr/3UOZP2CRDxGW9e0Q+2Qjyr3uJrm4xU32Y7ZCNAo7Cc7bjhrZMi/dwczu" crossorigin="anonymous"></script>
   <!-- QR Code generation -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
   <!-- JSZip for ZIP file creation -->
@@ -122,9 +138,15 @@
   <!-- Social Media Icons - Fixed at top right -->
   <div class="social-media-container">
             <button id="social-toggle" class="social-toggle" title="Social Media">
-          <img src="assets/social_media.svg" alt="Social Media" width="24" height="24">
+          <img src="assets/social_media.svg?v=b4509d5" alt="Social Media" width="24" height="24">
         </button>
     <div id="social-icons" class="social-icons">
+      <!-- Dark mode switch (see js/services/themeManager.js) -->
+      <button id="theme-toggle" class="theme-switch" role="switch" aria-checked="false" aria-label="Dark mode" title="Dark mode">
+        <span class="theme-switch-knob">
+          <span id="theme-toggle-icon" class="material-icons" translate="no">light_mode</span>
+        </span>
+      </button>
               <a href="https://www.youtube.com/playlist?list=PLmSeZDL8r_xK9uPcr2yb7Wgn7Gz_3u3Yy" target="_blank" rel="noopener noreferrer" title="YouTube" class="social-icon youtube">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
@@ -146,7 +168,7 @@
           </svg>
         </a>
               <a href="https://www.threads.com/@one.host.app" target="_blank" rel="noopener noreferrer" title="Threads" class="social-icon threads">
-          <img src="assets/threads.svg" alt="Threads" width="20" height="20">
+          <img src="assets/threads.svg?v=b4509d5" alt="Threads" width="20" height="20">
         </a>
               <a href="https://x.com/one_host_app" target="_blank" rel="noopener noreferrer" title="X (Twitter)" class="social-icon x">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -165,7 +187,11 @@
   <div class="container">
     <header>
       <div class="logo-container">
-        <img src="assets/logo.svg" alt="One-Host" class="logo">
+        <picture>
+          <!-- Static logo when the device asks for reduced motion -->
+          <source srcset="assets/logo.svg?v=b4509d5" media="(prefers-reduced-motion: reduce)">
+          <img src="assets/logo-animated.gif?v=b4509d5" alt="One-Host" class="logo">
+        </picture>
       </div>
       
       <div id="browser-support" class="hidden warning">
@@ -283,6 +309,6 @@
 
     <div id="notifications" class="notifications"></div>
   </div>
-  <script src="script.js?v=f3ba878"></script>
+  <script src="script.js?v=b4509d5"></script>
 </body>
 </html>

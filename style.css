@@ -9,6 +9,101 @@
     --card-background: #ffffff;
     --border-color: #e0e0e0;
     --shadow-color: rgba(0, 0, 0, 0.1);
+    --warning-hover-color: #f57c00;
+    --muted-text-color: #666;
+    --subtle-text-color: #999;
+    --strong-text-color: #000000;
+    --hover-background: #f0f0f0;
+    --header-hover-background: #f8f8f8;
+    --input-background: #ffffff;
+    --popover-background: #ffffff;
+    --popover-border: rgba(0, 0, 0, 0.08);
+    --popover-shadow: rgba(0, 0, 0, 0.15);
+    --icon-hover-background: rgba(0, 0, 0, 0.04);
+    --primary-tint: rgba(33, 150, 243, 0.1);
+    --primary-glow: rgba(33, 150, 243, 0.3);
+    --primary-glow-strong: rgba(33, 150, 243, 0.4);
+    --success-tint: rgba(76, 175, 80, 0.1);
+    --toggle-knob-color: #ffffff;
+    --info-background: #e0f2fe;
+    --info-text-color: #0369a1;
+    --mono-icon-filter: none;
+    --logo-filter: none;
+    --qr-module-color: #2196F3;
+    --qr-background: #ffffff;
+    color-scheme: light;
+}
+
+/* Dark theme: applied when the device prefers dark and the user hasn't picked Light,
+   or when the user explicitly picks Dark (data-theme is set by js/services/themeManager.js) */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --error-color: #ef5350;
+        --success-color: #66bb6a;
+        --warning-color: #ffa726;
+        --text-color: #e6e6e6;
+        --background-color: #000000; /* OLED: pixels off */
+        --card-background: #1e2126;
+        --border-color: #3a3f47;
+        --shadow-color: rgba(0, 0, 0, 0.5);
+        --warning-hover-color: #ffb74d;
+        --muted-text-color: #a8adb5;
+        --subtle-text-color: #868c95;
+        --strong-text-color: #f5f5f5;
+        --hover-background: #2a2e35;
+        --header-hover-background: #262a30;
+        --input-background: #15171b;
+        --popover-background: #23272d;
+        --popover-border: rgba(255, 255, 255, 0.08);
+        --popover-shadow: rgba(0, 0, 0, 0.6);
+        --icon-hover-background: rgba(255, 255, 255, 0.06);
+        --primary-tint: rgba(33, 150, 243, 0.16);
+        --primary-glow: rgba(33, 150, 243, 0.3);
+        --primary-glow-strong: rgba(33, 150, 243, 0.4);
+        --success-tint: rgba(102, 187, 106, 0.14);
+        --toggle-knob-color: #f5f5f5;
+        --info-background: #0c2a3d;
+        --info-text-color: #9fd3fb;
+        --mono-icon-filter: invert(1);
+        --logo-filter: brightness(1.35) saturate(1.1);
+        --qr-module-color: #0d2b4e;
+        --qr-background: #e3f2fd;
+        color-scheme: dark;
+    }
+}
+
+:root[data-theme="dark"] {
+    --error-color: #ef5350;
+    --success-color: #66bb6a;
+    --warning-color: #ffa726;
+    --text-color: #e6e6e6;
+    --background-color: #000000; /* OLED: pixels off */
+    --card-background: #1e2126;
+    --border-color: #3a3f47;
+    --shadow-color: rgba(0, 0, 0, 0.5);
+    --warning-hover-color: #ffb74d;
+    --muted-text-color: #a8adb5;
+    --subtle-text-color: #868c95;
+    --strong-text-color: #f5f5f5;
+    --hover-background: #2a2e35;
+    --header-hover-background: #262a30;
+    --input-background: #15171b;
+    --popover-background: #23272d;
+    --popover-border: rgba(255, 255, 255, 0.08);
+    --popover-shadow: rgba(0, 0, 0, 0.6);
+    --icon-hover-background: rgba(255, 255, 255, 0.06);
+    --primary-tint: rgba(33, 150, 243, 0.16);
+    --primary-glow: rgba(33, 150, 243, 0.3);
+    --primary-glow-strong: rgba(33, 150, 243, 0.4);
+    --success-tint: rgba(102, 187, 106, 0.14);
+    --toggle-knob-color: #f5f5f5;
+    --info-background: #0c2a3d;
+    --info-text-color: #9fd3fb;
+    --mono-icon-filter: invert(1);
+    --logo-filter: brightness(1.35) saturate(1.1);
+    --qr-module-color: #0d2b4e;
+    --qr-background: #e3f2fd;
+    color-scheme: dark;
 }
 
 * {
@@ -48,6 +143,7 @@ header {
     width: auto;
     max-width: 90%;
     transition: transform 0.2s ease;
+    filter: var(--logo-filter);
 }
 
 @media (max-width: 768px) {
@@ -59,6 +155,32 @@ header {
 @media (max-width: 480px) {
     .logo {
         height: 50px;
+    }
+}
+
+/* Let the logo size against .logo-container, not the <picture> wrapper,
+   so max-width: 90% doesn't squash it */
+.logo-container picture {
+    display: contents;
+}
+
+/* Animated logo (assets/logo-animated.gif) has less padding than logo.svg,
+   so it's shown about 17% shorter to match the static logo's visual size */
+@media (prefers-reduced-motion: no-preference) {
+    .logo {
+        height: 66px;
+    }
+}
+
+@media (prefers-reduced-motion: no-preference) and (max-width: 768px) {
+    .logo {
+        height: 50px;
+    }
+}
+
+@media (prefers-reduced-motion: no-preference) and (max-width: 480px) {
+    .logo {
+        height: 42px;
     }
 }
 
@@ -82,13 +204,13 @@ header {
     align-items: center;
     justify-content: center;
     transition: all 0.3s ease;
-    box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+    box-shadow: 0 2px 8px var(--primary-glow);
 }
 
 .social-toggle:hover {
     background: var(--hover-color);
     transform: scale(1.05);
-    box-shadow: 0 4px 12px rgba(33, 150, 243, 0.4);
+    box-shadow: 0 4px 12px var(--primary-glow-strong);
 }
 
 .social-toggle img {
@@ -101,9 +223,9 @@ header {
     position: absolute;
     top: 50px;
     right: 0;
-    background: white;
+    background: var(--popover-background);
     border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 8px 32px var(--popover-shadow);
     padding: 16px;
     display: flex;
     flex-direction: column;
@@ -118,7 +240,7 @@ header {
     transform: translateY(-10px) scale(0.95);
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: none;
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--popover-border);
 }
 
 .social-icons.show {
@@ -135,7 +257,7 @@ header {
     padding: 12px;
     border-radius: 10px;
     text-decoration: none;
-    color: #666;
+    color: var(--muted-text-color);
     transition: all 0.2s ease;
     min-width: 44px;
     min-height: 44px;
@@ -144,9 +266,9 @@ header {
 }
 
 .social-icon:hover {
-    background: rgba(0, 0, 0, 0.04);
+    background: var(--icon-hover-background);
     transform: scale(1.1);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 2px 8px var(--shadow-color);
 }
 
 .social-icon svg,
@@ -206,15 +328,20 @@ header {
 }
 
 .social-icon.threads {
-    color: #000000;
+    color: var(--strong-text-color);
+}
+
+/* Threads icon is a black <img>, so it can't use currentColor */
+.social-icon.threads img {
+    filter: var(--mono-icon-filter);
 }
 
 .social-icon.x {
-    color: #000000;
+    color: var(--strong-text-color);
 }
 
 .social-icon.guide {
-    color: #000000;
+    color: var(--strong-text-color);
     min-width: 50px;
     max-width: 80px;
     padding: 10px 8px;
@@ -224,7 +351,7 @@ header {
 }
 
 .social-icon.privacy-policy {
-    color: #000000;
+    color: var(--strong-text-color);
     min-width: 100px;
     max-width: 160px;
     padding: 12px 10px;
@@ -250,7 +377,7 @@ header {
 }
 
 .social-icon:hover {
-    background: rgba(0, 0, 0, 0.05);
+    background: var(--icon-hover-background);
 }
 
 /* Mobile Responsive */
@@ -313,6 +440,88 @@ header {
     }
 }
 
+/* Dark mode switch - first item in the social media menu */
+.theme-switch {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    border-radius: 24px;
+    background-color: var(--border-color);
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    margin-bottom: 4px;
+}
+
+.theme-switch[aria-checked="true"] {
+    background-color: var(--primary-color);
+}
+
+.theme-switch:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+.theme-switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background-color: var(--toggle-knob-color);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.3s ease;
+}
+
+.theme-switch[aria-checked="true"] .theme-switch-knob {
+    transform: translateX(20px);
+}
+
+.theme-switch-knob .material-icons[translate="no"] {
+    font-size: 14px !important;
+    color: var(--warning-color);
+}
+
+.theme-switch[aria-checked="true"] .theme-switch-knob .material-icons[translate="no"] {
+    color: var(--primary-color);
+}
+
+/* Theme change animations (js/services/themeManager.js) */
+.theme-switch-knob .material-icons.theme-icon-spin {
+    animation: theme-icon-spin 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes theme-icon-spin {
+    from { transform: rotate(-180deg) scale(0.4); opacity: 0.4; }
+    to { transform: rotate(0deg) scale(1); opacity: 1; }
+}
+
+/* Circular reveal: the script animates the new snapshot's clip-path, so turn off the default cross-fade */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
+
+/* Fallback cross-fade for browsers without View Transitions; the switch keeps its own transitions */
+:root.theme-fading *:not(.theme-switch):not(.theme-switch *),
+:root.theme-fading *:not(.theme-switch):not(.theme-switch *)::before,
+:root.theme-fading *:not(.theme-switch):not(.theme-switch *)::after {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .theme-switch-knob .material-icons.theme-icon-spin {
+        animation: none;
+    }
+}
+
 h1 {
     color: var(--primary-color);
     margin-bottom: 1rem;
@@ -372,7 +581,7 @@ h3 {
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background-color: white;
+    background-color: var(--toggle-knob-color);
     top: 2px;
     left: 2px;
     transition: transform 0.3s ease;
@@ -394,7 +603,7 @@ h3 {
 
 /* Optional: Hover state for orange */
 .auto-mode-switch.auto-mode-peer:checked + .toggle-slider:hover {
-    background-color: #f57c00; /* Darker orange on hover */
+    background-color: var(--warning-hover-color); /* Darker orange on hover */
 }
 
 .auto-mode-switch:disabled + .toggle-slider {
@@ -462,7 +671,7 @@ h3 {
     flex: 1;
     word-break: break-all;
     font-family: monospace;
-    color: #000000;
+    color: var(--strong-text-color);
     font-weight: normal;
 }
 
@@ -500,9 +709,17 @@ h3 {
 }
 
 #qrcode {
-    padding: 10px;
-    background: white;
+    padding: 16px; /* Quiet zone: about 4 squares, as scanners expect */
+    background: var(--qr-background);
     border-radius: 4px;
+}
+
+/* The QR is drawn at 800px (script.js) and scaled down here so it stays sharp */
+#qrcode img,
+#qrcode canvas {
+    width: 164px;
+    height: 164px;
+    max-width: 100%;
 }
 
 /* Connect peer styles */
@@ -529,6 +746,8 @@ input[type="text"] {
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 1rem;
+    background-color: var(--input-background);
+    color: var(--text-color);
 }
 
 input[type="text"]:focus {
@@ -618,7 +837,7 @@ input[type="text"]:focus {
     flex-direction: column;
     align-items: center;
     gap: 10px;
-    color: #666;
+    color: var(--muted-text-color);
 }
 
 .drop-zone-text .material-icons {
@@ -678,7 +897,7 @@ input[type="file"] {
 }
 
 .files-list li:hover {
-    background-color: #f0f0f0;
+    background-color: var(--hover-background);
 }
 
 .files-list .material-icons {
@@ -704,13 +923,13 @@ input[type="file"] {
 
 .file-size {
     font-size: 0.85rem;
-    color: #666;
+    color: var(--muted-text-color);
     margin-bottom: 2px;
 }
 
 .shared-by {
     font-size: 0.85rem;
-    color: #666;
+    color: var(--muted-text-color);
     font-style: italic;
 }
 
@@ -725,7 +944,7 @@ input[type="file"] {
 }
 
 .download-button:hover {
-    background-color: rgba(33, 150, 243, 0.1);
+    background-color: var(--primary-tint);
 }
 
 .download-button .material-icons {
@@ -745,7 +964,7 @@ input[type="file"] {
     border-radius: 8px;
     padding: 16px;
     margin-bottom: 24px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 3px var(--shadow-color);
 }
 
 .section-header {
@@ -776,7 +995,7 @@ input[type="file"] {
 }
 
 .bulk-download-btn:hover {
-    background-color: rgba(33, 150, 243, 0.1);
+    background-color: var(--primary-tint);
 }
 
 .bulk-download-btn:disabled {
@@ -804,7 +1023,7 @@ input[type="file"] {
 }
 
 .file-group-header:hover {
-    background-color: #f8f8f8;
+    background-color: var(--header-hover-background);
     border-color: var(--primary-color);
 }
 
@@ -866,7 +1085,7 @@ input[type="file"] {
 }
 
 .peer-bulk-download-btn:hover {
-    background-color: rgba(33, 150, 243, 0.1);
+    background-color: var(--primary-tint);
 }
 
 .peer-bulk-download-btn:disabled {
@@ -887,12 +1106,12 @@ input[type="file"] {
 
 .file-group-summary {
     font-size: 0.85rem;
-    color: #666;
+    color: var(--muted-text-color);
     line-height: 1.2;
 }
 
 .expand-icon {
-    color: #999;
+    color: var(--subtle-text-color);
     font-size: 20px;
     flex-shrink: 0;
     transition: transform 0.2s ease;
@@ -1078,11 +1297,11 @@ input[type="file"] {
 
 /* Download completed styles */
 .files-list li.download-completed {
-    background: rgba(76, 175, 80, 0.1);  /* Light green background */
+    background: var(--success-tint);  /* Light green background */
 }
 
 .icon-button.download-completed {
-    color: #4CAF50;  /* Green color for completed icon */
+    color: var(--success-color);  /* Green color for completed icon */
 }
 
 /* Peer ID editing styles */
@@ -1209,7 +1428,7 @@ input[type="file"] {
 #peer-id[translate="no"] {
     font-family: monospace !important;
     font-weight: normal !important;
-    color: #000000 !important;
+    color: var(--strong-text-color) !important;
 }
 
 /* Protect input placeholders from translation */

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="WebRTC File Sharing Logo" width="400">
+  <img src="assets/logo-animated.gif" alt="WebRTC File Sharing Logo" width="400">
 </p>
 
 A browser-based peer-to-peer file sharing application using WebRTC. Share files directly between browsers with no server storage.
