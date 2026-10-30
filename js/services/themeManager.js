@@ -23,9 +23,19 @@ class ThemeManager {
 
         this.applyTheme();
 
+        // Which theme the page opened in, and whether it came from the device or a saved choice
+        this.track('theme_loaded', {
+            theme: this.getEffectiveTheme(),
+            source: this.savedTheme ? 'saved' : 'device',
+            device_theme: this.getSystemTheme()
+        });
+
         // Keep the switch in step with the device while no choice is saved
         const onSystemChange = () => {
-            if (!this.savedTheme) this.applyTheme();
+            if (this.savedTheme) return;
+            const fromTheme = this.getSystemTheme() === 'dark' ? 'light' : 'dark';
+            this.applyTheme();
+            this.trackSwitch(fromTheme, this.getSystemTheme(), 'device');
         };
         if (this.systemQuery.addEventListener) {
             this.systemQuery.addEventListener('change', onSystemChange);
@@ -126,6 +136,7 @@ class ThemeManager {
     }
 
     toggle() {
+        const previousTheme = this.getEffectiveTheme();
         const nextTheme = this.getEffectiveTheme() === 'dark' ? 'light' : 'dark';
         // Matching the device again means "follow the device"
         this.savedTheme = nextTheme === this.getSystemTheme() ? null : nextTheme;
@@ -142,11 +153,25 @@ class ThemeManager {
 
         this.animateThemeChange(() => this.applyTheme());
 
+        this.trackSwitch(previousTheme, nextTheme, 'user');
+    }
+
+    // trigger: 'user' for a tap on the switch, 'device' when the OS theme changes while following it
+    trackSwitch(fromTheme, toTheme, trigger) {
+        this.track('theme_changed', {
+            theme: toTheme,
+            from_theme: fromTheme,
+            to_theme: toTheme,
+            direction: `${fromTheme}_to_${toTheme}`,
+            trigger,
+            follows_system: !this.savedTheme
+        });
+    }
+
+    track(eventName, parameters) {
+        // Analytics lives in script.js, which may not have loaded (or may have failed)
         if (typeof Analytics !== 'undefined') {
-            Analytics.track('theme_changed', {
-                theme: nextTheme,
-                follows_system: !this.savedTheme
-            });
+            Analytics.track(eventName, parameters);
         }
     }
 

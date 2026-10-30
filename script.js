@@ -428,9 +428,13 @@ window.addEventListener('themechange', () => {
 (async function restartLogoAnimation() {
     const logo = document.querySelector('.logo');
     // Static logo is shown when the device asks for reduced motion
-    if (!logo || !logo.currentSrc.includes('logo-animated.gif')) return;
+    if (!logo || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // currentSrc can still be empty this early; fetch('') would return the page itself
+    const src = logo.currentSrc || logo.src;
+    if (!src) return;
     try {
-        const response = await fetch(logo.currentSrc);
+        const response = await fetch(src);
+        if (!response.ok || !response.headers.get('content-type')?.startsWith('image/')) return;
         logo.src = URL.createObjectURL(await response.blob());
     } catch (error) {
         console.debug('Logo animation restart skipped:', error);
