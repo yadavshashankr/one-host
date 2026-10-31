@@ -1944,6 +1944,9 @@ const STREAM_DOWNLOAD_IDLE = 60000;        // No piece asked for this long: canc
 // Returns false when the download should use the in-memory way instead
 async function startStreamDownload(fileInfo) {
     const preview = window.filePreview;
+    // Safari keeps a service-worker download in memory until it ends, which crashes an iPhone
+    // tab around 2 GB, so Safari uses startDiskDownload instead
+    if (isSafariEngine()) return false;
     if (!preview || !(fileInfo.size > 0) || !(await preview.ensureStreamWorker())) return false;
     try {
         await requestRangeFromPeer(fileInfo, 0, 0, STREAM_PROBE_TIMEOUT);
@@ -2045,6 +2048,216 @@ function resetDownloadButton(fileId) {
     downloadProgressMap.delete(fileId);
 }
 
+// ---- Safari: downloading into browser storage (OPFS) first ----
+// A background worker writes each piece into the browser's private disk storage as it arrives,
+// so neither the page nor Safari's download manager holds the file. When it's complete, the
+// file's button becomes Save; tapping it hands Safari the finished file, which is already on disk.
+const DISK_DOWNLOAD_FOLDER = 'one-host-downloads';
+const DISK_PIECE = 1024 * 1024;            // Bytes asked of the sender per piece
+const DISK_PIECES_AHEAD = 4;               // Pieces in flight at once
+const DISK_CLEANUP_DELAY = 10 * 60 * 1000; // Stored copy is deleted this long after Save is tapped
+const readyDiskDownloads = new Map();      // fileId -> save(), files complete in storage but not saved yet
+
+// Safari on Mac, iPhone and iPad, and every iPhone/iPad browser (they all use Safari's engine)
+function isSafariEngine() {
+    const ua = navigator.userAgent;
+    if (/iPhone|iPad|iPod/.test(ua)) return true;
+    if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true; // iPadOS
+    return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
+}
+
+// The worker runs from a Blob, so it needs no separate file (and no cache busting).
+// createSyncAccessHandle is only available inside a worker on Safari.
+const DISK_WRITER_SOURCE = `
+let handle = null;
+onmessage = async (event) => {
+    const message = event.data;
+    try {
+        if (message.type === 'open') {
+            const root = await navigator.storage.getDirectory();
+            const folder = await root.getDirectoryHandle(message.folder, { create: true });
+            const file = await folder.getFileHandle(message.name, { create: true });
+            handle = await file.createSyncAccessHandle();
+            await handle.truncate(0);
+        } else if (message.type === 'write') {
+            const bytes = new Uint8Array(message.data);
+            const written = await handle.write(bytes, { at: message.at });
+            if (written !== bytes.length) throw new Error('Short write');
+        } else if (message.type === 'close') {
+            if (handle) {
+                await handle.flush();
+                await handle.close();
+                handle = null;
+            }
+        }
+        postMessage({ id: message.id, ok: true });
+    } catch (error) {
+        postMessage({ id: message.id, ok: false, error: (error && error.name) + ': ' + (error && error.message) });
+    }
+};`;
+
+function createDiskWriter() {
+    const url = URL.createObjectURL(new Blob([DISK_WRITER_SOURCE], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    URL.revokeObjectURL(url);
+    let nextId = 0;
+    const waiting = new Map();
+    worker.onmessage = (event) => {
+        const { id, ok, error } = event.data;
+        const entry = waiting.get(id);
+        if (!entry) return;
+        waiting.delete(id);
+        ok ? entry.resolve() : entry.reject(new Error(error));
+    };
+    const call = (message, transfer = []) => new Promise((resolve, reject) => {
+        const id = ++nextId;
+        waiting.set(id, { resolve, reject });
+        worker.postMessage({ ...message, id }, transfer);
+    });
+    return { call, terminate: () => worker.terminate() };
+}
+
+async function diskDownloadFolder() {
+    const root = await navigator.storage.getDirectory();
+    return root.getDirectoryHandle(DISK_DOWNLOAD_FOLDER, { create: true });
+}
+
+async function deleteStoredDownload(name) {
+    try {
+        await (await diskDownloadFolder()).removeEntry(name);
+    } catch (error) {
+        // Already gone, or still open in another tab
+    }
+}
+
+// Copies left by a page that was closed or crashed mid-download take up storage; remove them
+async function cleanUpDiskDownloads() {
+    if (!isSafariEngine() || !navigator.storage || !navigator.storage.getDirectory) return;
+    try {
+        const folder = await diskDownloadFolder();
+        for await (const name of folder.keys()) await deleteStoredDownload(name);
+    } catch (error) {
+        console.debug('Stored downloads not cleaned up:', error);
+    }
+}
+
+// Returns false when this download should use another way
+async function startDiskDownload(fileInfo) {
+    if (!isSafariEngine() || !(fileInfo.size > 0) || typeof Worker === 'undefined' ||
+        !navigator.storage || !navigator.storage.getDirectory) return false;
+    // Older senders don't answer range requests
+    try {
+        await requestRangeFromPeer(fileInfo, 0, 0, STREAM_PROBE_TIMEOUT);
+    } catch (error) {
+        console.log('Sender can\'t stream this file, downloading in memory instead:', error.message);
+        return false;
+    }
+    try {
+        const { quota, usage } = await navigator.storage.estimate();
+        if (quota && quota - usage < fileInfo.size * 1.02) {
+            resetDownloadButton(fileInfo.id);
+            // formatFileSize returns HTML; notifications show plain text
+            const plainSize = (bytes) => formatFileSize(bytes).replace(/<[^>]+>/g, '');
+            showNotification(`Not enough free browser storage for ${fileInfo.name} ` +
+                `(needs ${plainSize(fileInfo.size)}, ${plainSize(Math.max(0, quota - usage))} free)`, 'error');
+            return true; // Handled: the in-memory way would crash on a file this big
+        }
+    } catch (error) {
+        // No estimate available; go ahead and let a failed write report it
+    }
+
+    const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const writer = createDiskWriter();
+    try {
+        await writer.call({ type: 'open', folder: DISK_DOWNLOAD_FOLDER, name: storedName });
+    } catch (error) {
+        writer.terminate();
+        console.warn('Browser storage not usable, downloading another way:', error);
+        return false;
+    }
+
+    // Fetch pieces a few at a time and write each one where it belongs
+    const size = fileInfo.size;
+    let next = 0;
+    let written = 0;
+    let failed = null;
+    const worker = async () => {
+        while (!failed && next < size) {
+            const start = next;
+            const end = Math.min(size, start + DISK_PIECE) - 1;
+            next = end + 1;
+            const piece = await requestRangeFromPeer(fileInfo, start, end);
+            if (piece.data.byteLength !== end - start + 1) throw new Error('Piece has the wrong size');
+            await writer.call({ type: 'write', data: piece.data, at: start }, [piece.data]);
+            written += end - start + 1;
+            updateProgress(Math.min(99, (written / size) * 100), fileInfo.id);
+        }
+    };
+    (async () => {
+        try {
+            await Promise.all(Array.from({ length: DISK_PIECES_AHEAD }, () => worker().catch(error => {
+                failed = failed || error;
+            })));
+            if (failed) throw failed;
+            await writer.call({ type: 'close' });
+            writer.terminate();
+            const file = await (await (await diskDownloadFolder()).getFileHandle(storedName)).getFile();
+            offerStoredDownload(fileInfo, file, storedName);
+        } catch (error) {
+            console.error('Download into browser storage failed:', error);
+            writer.terminate();
+            deleteStoredDownload(storedName);
+            resetDownloadButton(fileInfo.id);
+            const full = /Quota/i.test(error.message);
+            showNotification(full
+                ? `Not enough free browser storage for ${fileInfo.name}`
+                : `Download of ${fileInfo.name} stopped. The sender may have disconnected.`, 'error');
+        }
+    })();
+    return true;
+}
+
+// The file is complete in browser storage; Save hands it to Safari (a tap, so Safari allows it)
+function offerStoredDownload(fileInfo, file, storedName) {
+    if (downloadProgressMap.has(fileInfo.id)) {
+        const entry = downloadProgressMap.get(fileInfo.id);
+        if (entry.button) entry.button.disabled = false;
+        downloadProgressMap.delete(fileInfo.id);
+    }
+    const save = () => {
+        const url = URL.createObjectURL(file);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileInfo.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        setTimeout(() => deleteStoredDownload(storedName), DISK_CLEANUP_DELAY);
+        readyDiskDownloads.delete(fileInfo.id);
+        markFileDownloaded(fileInfo.id, fileInfo.name, fileInfo.size);
+        updateBulkDownloadButtonState();
+        Analytics.track('file_downloaded_successfully', {
+            file_size: fileInfo.size,
+            file_type: Analytics.getFileExtension(fileInfo.name),
+            file_size_category: Analytics.getFileSizeCategory(fileInfo.size),
+            download_method: 'browser_storage',
+            device_type: Analytics.getDeviceType()
+        });
+    };
+    readyDiskDownloads.set(fileInfo.id, save);
+    const button = document.querySelector(`li.file-item[data-file-id="${fileInfo.id}"] button.icon-button`);
+    if (button) showSaveButton(button, save);
+    showNotification(`${fileInfo.name} is ready. Tap Save to keep it.`, 'success');
+}
+
+function showSaveButton(button, save) {
+    button.disabled = false;
+    button.innerHTML = '<span class="material-icons" translate="no">save_alt</span>';
+    button.title = 'Save to device';
+    button.onclick = save;
+}
+
 // Function to request and download a blob
 async function requestAndDownloadBlob(fileInfo) {
     try {
@@ -2095,7 +2308,8 @@ async function requestAndDownloadBlob(fileInfo) {
         updateTransferInfo('');
 
         // Straight to disk where the browser allows it; otherwise the file is collected in memory
-        if (await startStreamDownload(fileInfo)) return;
+        if (await startDiskDownload(fileInfo)) return;   // Safari engine: browser storage first
+        if (await startStreamDownload(fileInfo)) return; // Others: the browser's download manager
 
         // Request the file directly
         conn.send({
@@ -4675,6 +4889,9 @@ function createFileListItem(fileInfo, type) {
         }
     };
     
+    // Downloaded into browser storage (Safari) and waiting for Save: keep offering Save after a re-render
+    if (readyDiskDownloads.has(fileInfo.id)) showSaveButton(downloadBtn, readyDiskDownloads.get(fileInfo.id));
+
     li.appendChild(icon);
     li.appendChild(info);
     const previewBtn = createPreviewButton(fileInfo, type);
@@ -5069,6 +5286,9 @@ function initConnectionKeepAlive() {
     // Handle beforeunload event
     window.addEventListener('beforeunload', handleBeforeUnload);
     
+    // Remove partly downloaded files a previous visit left in browser storage
+    cleanUpDiskDownloads();
+
     // Initialize screen wake manager
     screenWake.init();
     
