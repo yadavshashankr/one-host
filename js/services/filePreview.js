@@ -127,7 +127,9 @@ class FilePreview {
         this.libraries = {}; // name -> Promise of the loaded library
         this.onPopState = this.onPopState.bind(this);
         this.onKeyDown = this.onKeyDown.bind(this);
-        this.streams = new Map(); // streamId -> requestRange(start, end), answered for stream-sw.js
+        // streamId -> requestRange(start, end), answered for stream-sw.js: preview players and
+        // downloads that go straight to disk (startStreamDownload in script.js)
+        this.streams = new Map();
         this.streamWorkerReady = this.registerStreamWorker();
     }
 

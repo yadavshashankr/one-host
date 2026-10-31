@@ -1,8 +1,10 @@
 // Stream Service Worker
-// Lets a received video or audio file play while it arrives. The preview's player loads
-// ./__preview-stream/<id>/<name>?size=<bytes>&type=<mime>; this worker answers those requests
-// with the byte ranges the player asks for, fetching each piece from the page, which asks the
-// sender over the peer connection (js/services/filePreview.js, script.js).
+// Lets a received video or audio file play while it arrives, and lets a received file download
+// straight to disk. The preview's player loads ./__preview-stream/<id>/<name>?size=<bytes>&type=<mime>;
+// this worker answers those requests with the byte ranges the player asks for, fetching each
+// piece from the page, which asks the sender over the peer connection (js/services/filePreview.js,
+// script.js). With &download=1 the same stream is answered as a file download, so the browser's
+// download manager writes each piece to disk as it arrives instead of the page holding the file.
 //
 // It handles nothing else: every other request goes to the network exactly as without it.
 // It keeps no state between requests (browsers stop idle workers, iOS quickly), so everything
@@ -120,6 +122,11 @@ async function streamResponse(request, streamId, params) {
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'no-store'
     };
+    if (params.get('download') === '1') {
+        const name = params.get('name') || 'download';
+        const plain = name.replace(/[^\x20-\x7e]|["\\]/g, '_'); // For browsers that ignore filename*
+        headers['Content-Disposition'] = `attachment; filename="${plain}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+    }
     if (match) {
         headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
         return new Response(body, { status: 206, headers });

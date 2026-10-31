@@ -1576,6 +1576,33 @@ async function sendFileToPeer(file, conn, fileId, fileBlob) {
     }
 }
 
+const SEND_READ_SIZE = 1024 * 1024;        // Bytes read from the file at a time when sending
+// Pause sending while more than SEND_BUFFER_HIGH is queued, and carry on once it drops below
+// SEND_BUFFER_LOW. Kept well under the 16 MB a data channel accepts, and high enough that the
+// connection never runs dry while waiting.
+const SEND_BUFFER_HIGH = 12 * 1024 * 1024;
+const SEND_BUFFER_LOW = 6 * 1024 * 1024;
+
+// Resolves once the connection has room for more. RTCDataChannel signals that with
+// 'bufferedamountlow'; PeerJS also keeps its own queue when the channel is full, so that is
+// checked on a short timer too.
+async function waitForSendBuffer(conn) {
+    const channel = conn.dataChannel;
+    if (!channel) return;
+    channel.bufferedAmountLowThreshold = SEND_BUFFER_LOW;
+    while (conn.open && (channel.bufferedAmount > SEND_BUFFER_HIGH || conn.bufferSize > 0)) {
+        await new Promise(resolve => {
+            const done = () => {
+                channel.removeEventListener('bufferedamountlow', done);
+                clearTimeout(timer);
+                resolve();
+            };
+            const timer = setTimeout(done, 100);
+            channel.addEventListener('bufferedamountlow', done);
+        });
+    }
+}
+
 // Handle blob request
 async function handleBlobRequest(data, conn) {
     const { fileId, forwardTo } = data;
@@ -1594,8 +1621,6 @@ async function handleBlobRequest(data, conn) {
     }
 
     try {
-        // Convert blob to array buffer
-        const buffer = await blob.arrayBuffer();
         let offset = 0;
         let lastProgressUpdate = 0;
 
@@ -1610,22 +1635,24 @@ async function handleBlobRequest(data, conn) {
             timestamp: Date.now()
         });
 
-        // Send chunks
+        // Send chunks, reading the file a piece at a time and waiting while the connection's
+        // send buffer is full, so only a few MB of the file are in memory at once
         while (offset < blob.size) {
             if (!conn.open) {
                 throw new Error('Connection lost during transfer');
             }
 
-            const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
-            conn.send({
-                type: 'file-chunk',
-                fileId: fileId,
-                data: chunk,
-                offset: offset,
-                total: blob.size
-            });
-
-            offset += chunk.byteLength;
+            const piece = await blob.slice(offset, offset + SEND_READ_SIZE).arrayBuffer();
+            for (let p = 0; p < piece.byteLength; p += CHUNK_SIZE) {
+                conn.send({
+                    type: 'file-chunk',
+                    fileId: fileId,
+                    data: piece.slice(p, p + CHUNK_SIZE),
+                    offset: offset + p,
+                    total: blob.size
+                });
+            }
+            offset += piece.byteLength;
 
             // Update progress
             const currentProgress = (offset / blob.size) * 100;
@@ -1633,6 +1660,7 @@ async function handleBlobRequest(data, conn) {
                 updateProgress(currentProgress, fileId);
                 lastProgressUpdate = currentProgress;
             }
+            await waitForSendBuffer(conn);
         }
 
         // Send completion message
@@ -1852,14 +1880,14 @@ const RANGE_REQUEST_TIMEOUT = 20000;
 const RANGE_MAX_BYTES = 1024 * 1024; // Largest piece the sender will send in one message
 const pendingRangeRequests = new Map(); // requestId -> { resolve, reject, timer }
 
-async function requestRangeFromPeer(fileInfo, start, end) {
+async function requestRangeFromPeer(fileInfo, start, end, timeout = RANGE_REQUEST_TIMEOUT) {
     const conn = await getSenderConnection(fileInfo.sharedBy);
     const requestId = `${fileInfo.id}-r${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     return new Promise((resolve, reject) => {
         const entry = {
             resolve: (data) => { clearTimeout(entry.timer); pendingRangeRequests.delete(requestId); resolve(data); },
             reject: (error) => { clearTimeout(entry.timer); pendingRangeRequests.delete(requestId); reject(error); },
-            timer: setTimeout(() => entry.reject(new Error('The sender did not answer')), RANGE_REQUEST_TIMEOUT)
+            timer: setTimeout(() => entry.reject(new Error('The sender did not answer')), timeout)
         };
         pendingRangeRequests.set(requestId, entry);
         conn.send({ type: 'range-request', requestId, fileId: fileInfo.id, start, end });
@@ -1903,6 +1931,118 @@ async function handleRangeRequest(data, conn) {
     } catch (error) {
         reply({ ok: false, error: error.message });
     }
+}
+
+// ---- Downloading received files straight to disk ----
+// The file is downloaded from ./__preview-stream/<id>/<name>?...&download=1 in a hidden frame:
+// stream-sw.js answers it as a file download and fills it piece by piece from the sender
+// (the same byte-range requests as video streaming), and the browser's download manager writes
+// each piece to disk. The page never holds the whole file.
+const STREAM_PROBE_TIMEOUT = 5000;         // Older senders don't answer range requests at all
+const STREAM_DOWNLOAD_IDLE = 60000;        // No piece asked for this long: cancelled or stalled
+
+// Returns false when the download should use the in-memory way instead
+async function startStreamDownload(fileInfo) {
+    const preview = window.filePreview;
+    if (!preview || !(fileInfo.size > 0) || !(await preview.ensureStreamWorker())) return false;
+    try {
+        await requestRangeFromPeer(fileInfo, 0, 0, STREAM_PROBE_TIMEOUT);
+    } catch (error) {
+        console.log('Sender can\'t stream this file, downloading in memory instead:', error.message);
+        return false;
+    }
+
+    const streamId = Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+    const size = fileInfo.size;
+    const delivered = new Set(); // Start offsets of pieces already counted
+    let received = 0;
+    let finished = false;
+    let idleTimer = null;
+    const frame = document.createElement('iframe');
+
+    const finish = () => {
+        finished = true;
+        clearTimeout(idleTimer);
+        // Leave the last pieces time to reach the download before letting go of the stream
+        setTimeout(() => {
+            preview.streams.delete(streamId);
+            frame.remove();
+        }, 5000);
+    };
+    const fail = (message) => {
+        if (finished) return;
+        finish();
+        resetDownloadButton(fileInfo.id);
+        showNotification(message, 'error');
+    };
+    const resetIdleTimer = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => fail(`Download of ${fileInfo.name} stopped`), STREAM_DOWNLOAD_IDLE);
+    };
+
+    preview.streams.set(streamId, async (start, end) => {
+        if (finished) throw new Error('Download finished');
+        resetIdleTimer();
+        let piece;
+        try {
+            piece = await requestRangeFromPeer(fileInfo, start, end);
+        } catch (error) {
+            fail(`Download of ${fileInfo.name} stopped. The sender may have disconnected.`);
+            throw error;
+        }
+        if (!delivered.has(start)) {
+            delivered.add(start);
+            received += piece.data.byteLength;
+            updateProgress(Math.min(100, (received / size) * 100), fileInfo.id);
+        }
+        if (received >= size) {
+            finish();
+            completeStreamDownload(fileInfo);
+        }
+        return piece;
+    });
+
+    const type = fileInfo.type || 'application/octet-stream';
+    frame.hidden = true;
+    frame.src = `__preview-stream/${streamId}/${encodeURIComponent(fileInfo.name)}` +
+        `?size=${size}&type=${encodeURIComponent(type)}&download=1&name=${encodeURIComponent(fileInfo.name)}`;
+    document.body.appendChild(frame);
+    resetIdleTimer();
+    return true;
+}
+
+function completeStreamDownload(fileInfo) {
+    if (downloadProgressMap.has(fileInfo.id)) {
+        const entry = downloadProgressMap.get(fileInfo.id);
+        if (entry.button) entry.button.disabled = false;
+        downloadProgressMap.delete(fileInfo.id);
+    }
+    markFileDownloaded(fileInfo.id, fileInfo.name, fileInfo.size);
+    updateBulkDownloadButtonState();
+    if (bulkDownloadProgress.isBulkDownload && bulkDownloadProgress.total > 0) {
+        bulkDownloadProgress.completed++;
+        showOrUpdateProgressNotification('downloading', bulkDownloadProgress.completed, bulkDownloadProgress.total, 'downloading');
+    } else {
+        showNotification(`Downloaded ${fileInfo.name}`, 'success');
+    }
+    Analytics.track('file_downloaded_successfully', {
+        file_size: fileInfo.size,
+        file_type: Analytics.getFileExtension(fileInfo.name),
+        file_size_category: Analytics.getFileSizeCategory(fileInfo.size),
+        download_method: 'stream',
+        device_type: Analytics.getDeviceType()
+    });
+}
+
+// Put a file's download button back after a download that didn't finish
+function resetDownloadButton(fileId) {
+    const entry = downloadProgressMap.get(fileId);
+    if (!entry) return;
+    if (entry.button) {
+        entry.button.disabled = false;
+        entry.button.innerHTML = '<span class="material-icons" translate="no">download</span>';
+    }
+    downloadProgressMap.delete(fileId);
 }
 
 // Function to request and download a blob
@@ -1953,6 +2093,9 @@ async function requestAndDownloadBlob(fileInfo) {
         elements.transferProgress.classList.add('hidden'); // Hide the progress bar
         updateProgress(0, fileInfo.id);
         updateTransferInfo('');
+
+        // Straight to disk where the browser allows it; otherwise the file is collected in memory
+        if (await startStreamDownload(fileInfo)) return;
 
         // Request the file directly
         conn.send({
@@ -2632,8 +2775,9 @@ async function sendFile(file) {
         // Generate a unique file ID that will be same for all recipients
         const fileId = generateFileId(file);
         
-        // Create file blob once for the sender
-        const fileBlob = new Blob([await file.arrayBuffer()], { type: file.type });
+        // Keep the picked file itself rather than a copy: a File is read from disk only when a
+        // piece of it is needed, so sharing a large file doesn't hold it in memory
+        const fileBlob = file;
         
         // Add to sender's history first
         const fileInfo = {
@@ -5180,49 +5324,52 @@ function downloadBlob(blob, fileName, fileId) {
     });
 
     // If fileId is provided, update the UI
-    if (fileId) {
-        // Clear any existing blob URL for this file (if re-downloaded)
-        if (completedFileBlobURLs.has(fileId)) {
-            const existingValue = completedFileBlobURLs.get(fileId);
-            // If it's a blob URL (string), revoke it
-            if (typeof existingValue === 'string') {
-                URL.revokeObjectURL(existingValue);
-                activeBlobURLs.delete(existingValue);
-            }
-            completedFileBlobURLs.delete(fileId);
-        }
-        
-        const listItem = document.querySelector(`[data-file-id="${fileId}"]`);
-        if (listItem) {
-            listItem.classList.add('download-completed');
-            const downloadButton = listItem.querySelector('.icon-button');
-            if (downloadButton) {
-                downloadButton.classList.add('download-completed');
-                downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-                downloadButton.title = 'Open file';
-                
-                // Mark file as downloaded (without storing blob URL - file is in Downloads folder)
-                completedFileBlobURLs.set(fileId, true); // Use as flag to track downloaded files
-                
-                // Show notification when user clicks to open
-                downloadButton.onclick = () => {
-                    // Track file open click
-                    Analytics.track('file_open_clicked', {
-                        file_size: blob.size,
-                        file_type: Analytics.getFileExtension(fileName),
-                        device_type: Analytics.getDeviceType()
-                    });
-                    showNotification('Please check your Downloads folder', 'info');
-                };
-            }
-        }
-    }
+    if (fileId) markFileDownloaded(fileId, fileName, blob.size);
 
     // Cleanup the download URL
     setTimeout(() => {
         URL.revokeObjectURL(url);
         activeBlobURLs.delete(url); // Remove from tracking
     }, 100);
+}
+
+// Show a file as downloaded in the list: its button becomes "Open file"
+function markFileDownloaded(fileId, fileName, fileSize) {
+    // Clear any existing blob URL for this file (if re-downloaded)
+    if (completedFileBlobURLs.has(fileId)) {
+        const existingValue = completedFileBlobURLs.get(fileId);
+        // If it's a blob URL (string), revoke it
+        if (typeof existingValue === 'string') {
+            URL.revokeObjectURL(existingValue);
+            activeBlobURLs.delete(existingValue);
+        }
+        completedFileBlobURLs.delete(fileId);
+    }
+    
+    const listItem = document.querySelector(`[data-file-id="${fileId}"]`);
+    if (listItem) {
+        listItem.classList.add('download-completed');
+        const downloadButton = listItem.querySelector('.icon-button');
+        if (downloadButton) {
+            downloadButton.classList.add('download-completed');
+            downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+            downloadButton.title = 'Open file';
+            
+            // Mark file as downloaded (without storing blob URL - file is in Downloads folder)
+            completedFileBlobURLs.set(fileId, true); // Use as flag to track downloaded files
+            
+            // Show notification when user clicks to open
+            downloadButton.onclick = () => {
+                // Track file open click
+                Analytics.track('file_open_clicked', {
+                    file_size: fileSize,
+                    file_type: Analytics.getFileExtension(fileName),
+                    device_type: Analytics.getDeviceType()
+                });
+                showNotification('Please check your Downloads folder', 'info');
+            };
+        }
+    }
 }
 
 // Function to handle simultaneous download request
