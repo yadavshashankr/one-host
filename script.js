@@ -1130,18 +1130,6 @@ function setupConnectionHandlers(conn, connectionTimeout = null) {
                     // Handle direct blob request
                     await handleBlobRequest(data, conn);
                     break;
-                case 'preview-request':
-                    await handlePreviewRequest(data, conn);
-                    break;
-                case 'preview-response':
-                    handlePreviewResponse(data);
-                    break;
-                case 'range-request':
-                    await handleRangeRequest(data, conn);
-                    break;
-                case 'range-response':
-                    handleRangeResponse(data);
-                    break;
                 case 'blob-request-forwarded':
                     // Handle forwarded blob request (host only)
                     await handleForwardedBlobRequest(data, conn);
@@ -1354,7 +1342,6 @@ async function handleFileHeader(data) {
         request.fileData.fileSize = data.fileSize;
         request.fileData.receivedSize = 0;
         request.chunks = [];
-        if (request.onChunk) request.onChunk();
         return; // Don't process as regular file download
     }
     
@@ -1378,7 +1365,6 @@ async function handleFileChunk(data) {
         const request = pendingBlobRequests.get(data.fileId);
         request.chunks.push(data.data);
         request.fileData.receivedSize += data.data.byteLength;
-        if (request.onChunk) request.onChunk();
         return; // Don't process as regular file download
     }
     
@@ -1576,33 +1562,6 @@ async function sendFileToPeer(file, conn, fileId, fileBlob) {
     }
 }
 
-const SEND_READ_SIZE = 1024 * 1024;        // Bytes read from the file at a time when sending
-// Pause sending while more than SEND_BUFFER_HIGH is queued, and carry on once it drops below
-// SEND_BUFFER_LOW. Kept well under the 16 MB a data channel accepts, and high enough that the
-// connection never runs dry while waiting.
-const SEND_BUFFER_HIGH = 12 * 1024 * 1024;
-const SEND_BUFFER_LOW = 6 * 1024 * 1024;
-
-// Resolves once the connection has room for more. RTCDataChannel signals that with
-// 'bufferedamountlow'; PeerJS also keeps its own queue when the channel is full, so that is
-// checked on a short timer too.
-async function waitForSendBuffer(conn) {
-    const channel = conn.dataChannel;
-    if (!channel) return;
-    channel.bufferedAmountLowThreshold = SEND_BUFFER_LOW;
-    while (conn.open && (channel.bufferedAmount > SEND_BUFFER_HIGH || conn.bufferSize > 0)) {
-        await new Promise(resolve => {
-            const done = () => {
-                channel.removeEventListener('bufferedamountlow', done);
-                clearTimeout(timer);
-                resolve();
-            };
-            const timer = setTimeout(done, 100);
-            channel.addEventListener('bufferedamountlow', done);
-        });
-    }
-}
-
 // Handle blob request
 async function handleBlobRequest(data, conn) {
     const { fileId, forwardTo } = data;
@@ -1621,6 +1580,8 @@ async function handleBlobRequest(data, conn) {
     }
 
     try {
+        // Convert blob to array buffer
+        const buffer = await blob.arrayBuffer();
         let offset = 0;
         let lastProgressUpdate = 0;
 
@@ -1635,24 +1596,22 @@ async function handleBlobRequest(data, conn) {
             timestamp: Date.now()
         });
 
-        // Send chunks, reading the file a piece at a time and waiting while the connection's
-        // send buffer is full, so only a few MB of the file are in memory at once
+        // Send chunks
         while (offset < blob.size) {
             if (!conn.open) {
                 throw new Error('Connection lost during transfer');
             }
 
-            const piece = await blob.slice(offset, offset + SEND_READ_SIZE).arrayBuffer();
-            for (let p = 0; p < piece.byteLength; p += CHUNK_SIZE) {
-                conn.send({
-                    type: 'file-chunk',
-                    fileId: fileId,
-                    data: piece.slice(p, p + CHUNK_SIZE),
-                    offset: offset + p,
-                    total: blob.size
-                });
-            }
-            offset += piece.byteLength;
+            const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+            conn.send({
+                type: 'file-chunk',
+                fileId: fileId,
+                data: chunk,
+                offset: offset,
+                total: blob.size
+            });
+
+            offset += chunk.byteLength;
 
             // Update progress
             const currentProgress = (offset / blob.size) * 100;
@@ -1660,7 +1619,6 @@ async function handleBlobRequest(data, conn) {
                 updateProgress(currentProgress, fileId);
                 lastProgressUpdate = currentProgress;
             }
-            await waitForSendBuffer(conn);
         }
 
         // Send completion message
@@ -1731,27 +1689,12 @@ async function requestBlobFromPeer(fileInfo) {
                 fileSize: fileInfo.size
             };
 
-            // Give up only when no data has arrived for a while, so big files can take as long as they need
-            const IDLE_TIMEOUT = 60000;
-            let idleTimer = null;
-            const resetIdleTimer = () => {
-                clearTimeout(idleTimer);
-                idleTimer = setTimeout(() => {
-                    if (pendingBlobRequests.get(requestId) === request) {
-                        pendingBlobRequests.delete(requestId);
-                        reject(new Error('Blob request timeout'));
-                    }
-                }, IDLE_TIMEOUT);
-            };
-            const request = {
-                resolve: (blob) => { clearTimeout(idleTimer); resolve(blob); },
-                reject: (error) => { clearTimeout(idleTimer); reject(error); },
+            pendingBlobRequests.set(requestId, {
+                resolve,
+                reject,
                 chunks: fileData.chunks,
-                fileData: fileData,
-                onChunk: resetIdleTimer
-            };
-            pendingBlobRequests.set(requestId, request);
-            resetIdleTimer();
+                fileData: fileData
+            });
 
             // Request the file directly
             conn.send({
@@ -1762,500 +1705,19 @@ async function requestBlobFromPeer(fileInfo) {
                 forZip: true // Flag to indicate this is for ZIP, not direct download
             });
 
+            // Set timeout for blob request
+            setTimeout(() => {
+                if (pendingBlobRequests.has(requestId)) {
+                    pendingBlobRequests.delete(requestId);
+                    reject(new Error('Blob request timeout'));
+                }
+            }, 60000); // 60 second timeout
+
         } catch (error) {
             console.error('Error requesting blob:', error);
             reject(error);
         }
     });
-}
-
-// ---- File previews ----
-// The receiver asks the original sender for a preview; the sender builds a small one from its
-// own copy (filePreview.createPreview) and sends only that. Senders on an older version don't
-// answer, so the request times out and the receiver shows "Preview unavailable".
-const PREVIEW_REQUEST_TIMEOUT = 30000; // The sender may first need to load a document reader
-const pendingPreviewRequests = new Map(); // requestId -> { resolve, reject, timer }
-
-// Open connection to the peer that originally shared a file, connecting directly if needed
-async function getSenderConnection(peerId) {
-    let conn = connections.get(peerId);
-    if (conn && conn.open) return conn;
-    conn = peer.connect(peerId, { reliable: true });
-    await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Connection timeout')), 10000);
-        conn.on('open', () => {
-            clearTimeout(timeout);
-            connections.set(peerId, conn);
-            setupConnectionHandlers(conn);
-            resolve();
-        });
-        conn.on('error', (err) => {
-            clearTimeout(timeout);
-            reject(err);
-        });
-    });
-    return conn;
-}
-
-async function requestPreviewFromPeer(fileInfo, part = {}, signal = null) {
-    const conn = await getSenderConnection(fileInfo.sharedBy);
-    if (signal && signal.aborted) throw new DOMException('Preview closed', 'AbortError');
-    const requestId = `${fileInfo.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise((resolve, reject) => {
-        const done = () => {
-            clearTimeout(entry.timer);
-            pendingPreviewRequests.delete(requestId);
-            if (signal) signal.removeEventListener('abort', onAbort);
-        };
-        const onAbort = () => {
-            done();
-            reject(new DOMException('Preview closed', 'AbortError'));
-        };
-        const entry = {
-            resolve: (preview) => { done(); resolve(preview); },
-            reject: (error) => { done(); reject(error); },
-            timer: setTimeout(() => {
-                done();
-                reject(new PreviewUnavailableError('The sender didn\'t respond.'));
-            }, PREVIEW_REQUEST_TIMEOUT)
-        };
-        pendingPreviewRequests.set(requestId, entry);
-        if (signal) signal.addEventListener('abort', onAbort);
-
-        conn.send({
-            type: 'preview-request',
-            requestId,
-            fileId: fileInfo.id,
-            fileName: fileInfo.name,
-            fileType: fileInfo.type,
-            offset: Number(part.offset) || 0,
-            page: Number(part.page) || 1
-        });
-    });
-}
-
-function handlePreviewResponse(data) {
-    const entry = pendingPreviewRequests.get(data.requestId);
-    if (!entry) return; // Preview was closed or timed out
-    if (data.ok) {
-        entry.resolve(data.preview);
-    } else {
-        // reason is a short message for the viewer (e.g. too large); anything else is only logged
-        const reason = typeof data.reason === 'string' ? data.reason.slice(0, 200) : '';
-        entry.reject(reason ? new PreviewUnavailableError(reason) : new Error(data.error || 'Preview unavailable'));
-    }
-}
-
-// Sender side: build a preview of a file this device shared and send it back
-async function handlePreviewRequest(data, conn) {
-    const reply = (fields) => {
-        if (conn.open) conn.send({ type: 'preview-response', requestId: data.requestId, fileId: data.fileId, ...fields });
-    };
-    const blob = sentFileBlobs.get(data.fileId);
-    if (!blob || !window.filePreview) {
-        reply({ ok: false, error: 'File not available' });
-        return;
-    }
-    try {
-        const preview = await window.filePreview.createPreview(blob, data.fileName, data.fileType || blob.type, {
-            offset: data.offset,
-            page: data.page
-        });
-        reply({ ok: true, preview });
-    } catch (error) {
-        console.warn('Preview not built:', error);
-        reply({
-            ok: false,
-            error: error.message,
-            reason: error instanceof PreviewUnavailableError ? error.message : ''
-        });
-    }
-}
-
-// ---- Streaming received video and audio ----
-// The preview's player asks for byte ranges (through stream-sw.js); each range is fetched from
-// the sender here. Only the ranges the player asks for are transferred, never the whole file.
-const RANGE_REQUEST_TIMEOUT = 20000;
-const RANGE_MAX_BYTES = 1024 * 1024; // Largest piece the sender will send in one message
-const pendingRangeRequests = new Map(); // requestId -> { resolve, reject, timer }
-
-async function requestRangeFromPeer(fileInfo, start, end, timeout = RANGE_REQUEST_TIMEOUT) {
-    const conn = await getSenderConnection(fileInfo.sharedBy);
-    const requestId = `${fileInfo.id}-r${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise((resolve, reject) => {
-        const entry = {
-            resolve: (data) => { clearTimeout(entry.timer); pendingRangeRequests.delete(requestId); resolve(data); },
-            reject: (error) => { clearTimeout(entry.timer); pendingRangeRequests.delete(requestId); reject(error); },
-            timer: setTimeout(() => entry.reject(new Error('The sender did not answer')), timeout)
-        };
-        pendingRangeRequests.set(requestId, entry);
-        conn.send({ type: 'range-request', requestId, fileId: fileInfo.id, start, end });
-    });
-}
-
-async function handleRangeResponse(data) {
-    const entry = pendingRangeRequests.get(data.requestId);
-    if (!entry) return;
-    if (!data.ok || !data.data) {
-        entry.reject(new Error(data.error || 'Range unavailable'));
-        return;
-    }
-    // PeerJS hands large messages over as a typed array or Blob rather than an ArrayBuffer;
-    // the stream worker needs a plain ArrayBuffer of exactly this piece
-    let piece = data.data;
-    if (piece instanceof Blob) piece = await piece.arrayBuffer();
-    else if (ArrayBuffer.isView(piece)) piece = piece.buffer.slice(piece.byteOffset, piece.byteOffset + piece.byteLength);
-    entry.resolve({ data: piece, total: data.total });
-}
-
-// Sender side: send one piece of a file this device shared
-async function handleRangeRequest(data, conn) {
-    const reply = (fields) => {
-        if (conn.open) conn.send({ type: 'range-response', requestId: data.requestId, ...fields });
-    };
-    const blob = sentFileBlobs.get(data.fileId);
-    const start = Math.floor(Number(data.start));
-    const end = Math.floor(Number(data.end));
-    if (!blob) {
-        reply({ ok: false, error: 'File not available' });
-        return;
-    }
-    if (!(start >= 0) || !(end >= start) || start >= blob.size || end - start + 1 > RANGE_MAX_BYTES) {
-        reply({ ok: false, error: 'Invalid range' });
-        return;
-    }
-    try {
-        const piece = await blob.slice(start, Math.min(end, blob.size - 1) + 1).arrayBuffer();
-        reply({ ok: true, data: piece, total: blob.size });
-    } catch (error) {
-        reply({ ok: false, error: error.message });
-    }
-}
-
-// ---- Downloading received files straight to disk ----
-// The file is downloaded from ./__preview-stream/<id>/<name>?...&download=1 in a hidden frame:
-// stream-sw.js answers it as a file download and fills it piece by piece from the sender
-// (the same byte-range requests as video streaming), and the browser's download manager writes
-// each piece to disk. The page never holds the whole file.
-const STREAM_PROBE_TIMEOUT = 5000;         // Older senders don't answer range requests at all
-const STREAM_DOWNLOAD_IDLE = 60000;        // No piece asked for this long: cancelled or stalled
-
-// Returns false when the download should use the in-memory way instead
-async function startStreamDownload(fileInfo) {
-    const preview = window.filePreview;
-    // Safari keeps a service-worker download in memory until it ends, which crashes an iPhone
-    // tab around 2 GB, so Safari uses startDiskDownload instead
-    if (isSafariEngine()) return false;
-    if (!preview || !(fileInfo.size > 0) || !(await preview.ensureStreamWorker())) return false;
-    try {
-        await requestRangeFromPeer(fileInfo, 0, 0, STREAM_PROBE_TIMEOUT);
-    } catch (error) {
-        console.log('Sender can\'t stream this file, downloading in memory instead:', error.message);
-        return false;
-    }
-
-    const streamId = Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
-    const size = fileInfo.size;
-    const delivered = new Set(); // Start offsets of pieces already counted
-    let received = 0;
-    let finished = false;
-    let idleTimer = null;
-    const frame = document.createElement('iframe');
-
-    const finish = () => {
-        finished = true;
-        clearTimeout(idleTimer);
-        // Leave the last pieces time to reach the download before letting go of the stream
-        setTimeout(() => {
-            preview.streams.delete(streamId);
-            frame.remove();
-        }, 5000);
-    };
-    const fail = (message) => {
-        if (finished) return;
-        finish();
-        resetDownloadButton(fileInfo.id);
-        showNotification(message, 'error');
-    };
-    const resetIdleTimer = () => {
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => fail(`Download of ${fileInfo.name} stopped`), STREAM_DOWNLOAD_IDLE);
-    };
-
-    preview.streams.set(streamId, async (start, end) => {
-        if (finished) throw new Error('Download finished');
-        resetIdleTimer();
-        let piece;
-        try {
-            piece = await requestRangeFromPeer(fileInfo, start, end);
-        } catch (error) {
-            fail(`Download of ${fileInfo.name} stopped. The sender may have disconnected.`);
-            throw error;
-        }
-        if (!delivered.has(start)) {
-            delivered.add(start);
-            received += piece.data.byteLength;
-            updateProgress(Math.min(100, (received / size) * 100), fileInfo.id);
-        }
-        if (received >= size) {
-            finish();
-            completeStreamDownload(fileInfo);
-        }
-        return piece;
-    });
-
-    const type = fileInfo.type || 'application/octet-stream';
-    frame.hidden = true;
-    frame.src = `__preview-stream/${streamId}/${encodeURIComponent(fileInfo.name)}` +
-        `?size=${size}&type=${encodeURIComponent(type)}&download=1&name=${encodeURIComponent(fileInfo.name)}`;
-    document.body.appendChild(frame);
-    resetIdleTimer();
-    return true;
-}
-
-function completeStreamDownload(fileInfo) {
-    if (downloadProgressMap.has(fileInfo.id)) {
-        const entry = downloadProgressMap.get(fileInfo.id);
-        if (entry.button) entry.button.disabled = false;
-        downloadProgressMap.delete(fileInfo.id);
-    }
-    markFileDownloaded(fileInfo.id, fileInfo.name, fileInfo.size);
-    updateBulkDownloadButtonState();
-    if (bulkDownloadProgress.isBulkDownload && bulkDownloadProgress.total > 0) {
-        bulkDownloadProgress.completed++;
-        showOrUpdateProgressNotification('downloading', bulkDownloadProgress.completed, bulkDownloadProgress.total, 'downloading');
-    } else {
-        showNotification(`Downloaded ${fileInfo.name}`, 'success');
-    }
-    Analytics.track('file_downloaded_successfully', {
-        file_size: fileInfo.size,
-        file_type: Analytics.getFileExtension(fileInfo.name),
-        file_size_category: Analytics.getFileSizeCategory(fileInfo.size),
-        download_method: 'stream',
-        device_type: Analytics.getDeviceType()
-    });
-}
-
-// Put a file's download button back after a download that didn't finish
-function resetDownloadButton(fileId) {
-    const entry = downloadProgressMap.get(fileId);
-    if (!entry) return;
-    if (entry.button) {
-        entry.button.disabled = false;
-        entry.button.innerHTML = '<span class="material-icons" translate="no">download</span>';
-    }
-    downloadProgressMap.delete(fileId);
-}
-
-// ---- Safari: downloading into browser storage (OPFS) first ----
-// A background worker writes each piece into the browser's private disk storage as it arrives,
-// so neither the page nor Safari's download manager holds the file. When it's complete, the
-// file's button becomes Save; tapping it hands Safari the finished file, which is already on disk.
-const DISK_DOWNLOAD_FOLDER = 'one-host-downloads';
-const DISK_PIECE = 1024 * 1024;            // Bytes asked of the sender per piece
-const DISK_PIECES_AHEAD = 4;               // Pieces in flight at once
-const DISK_CLEANUP_DELAY = 10 * 60 * 1000; // Stored copy is deleted this long after Save is tapped
-const readyDiskDownloads = new Map();      // fileId -> save(), files complete in storage but not saved yet
-
-// Safari on Mac, iPhone and iPad, and every iPhone/iPad browser (they all use Safari's engine)
-function isSafariEngine() {
-    const ua = navigator.userAgent;
-    if (/iPhone|iPad|iPod/.test(ua)) return true;
-    if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true; // iPadOS
-    return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
-}
-
-// The worker runs from a Blob, so it needs no separate file (and no cache busting).
-// createSyncAccessHandle is only available inside a worker on Safari.
-const DISK_WRITER_SOURCE = `
-let handle = null;
-onmessage = async (event) => {
-    const message = event.data;
-    try {
-        if (message.type === 'open') {
-            const root = await navigator.storage.getDirectory();
-            const folder = await root.getDirectoryHandle(message.folder, { create: true });
-            const file = await folder.getFileHandle(message.name, { create: true });
-            handle = await file.createSyncAccessHandle();
-            await handle.truncate(0);
-        } else if (message.type === 'write') {
-            const bytes = new Uint8Array(message.data);
-            const written = await handle.write(bytes, { at: message.at });
-            if (written !== bytes.length) throw new Error('Short write');
-        } else if (message.type === 'close') {
-            if (handle) {
-                await handle.flush();
-                await handle.close();
-                handle = null;
-            }
-        }
-        postMessage({ id: message.id, ok: true });
-    } catch (error) {
-        postMessage({ id: message.id, ok: false, error: (error && error.name) + ': ' + (error && error.message) });
-    }
-};`;
-
-function createDiskWriter() {
-    const url = URL.createObjectURL(new Blob([DISK_WRITER_SOURCE], { type: 'text/javascript' }));
-    const worker = new Worker(url);
-    URL.revokeObjectURL(url);
-    let nextId = 0;
-    const waiting = new Map();
-    worker.onmessage = (event) => {
-        const { id, ok, error } = event.data;
-        const entry = waiting.get(id);
-        if (!entry) return;
-        waiting.delete(id);
-        ok ? entry.resolve() : entry.reject(new Error(error));
-    };
-    const call = (message, transfer = []) => new Promise((resolve, reject) => {
-        const id = ++nextId;
-        waiting.set(id, { resolve, reject });
-        worker.postMessage({ ...message, id }, transfer);
-    });
-    return { call, terminate: () => worker.terminate() };
-}
-
-async function diskDownloadFolder() {
-    const root = await navigator.storage.getDirectory();
-    return root.getDirectoryHandle(DISK_DOWNLOAD_FOLDER, { create: true });
-}
-
-async function deleteStoredDownload(name) {
-    try {
-        await (await diskDownloadFolder()).removeEntry(name);
-    } catch (error) {
-        // Already gone, or still open in another tab
-    }
-}
-
-// Copies left by a page that was closed or crashed mid-download take up storage; remove them
-async function cleanUpDiskDownloads() {
-    if (!isSafariEngine() || !navigator.storage || !navigator.storage.getDirectory) return;
-    try {
-        const folder = await diskDownloadFolder();
-        for await (const name of folder.keys()) await deleteStoredDownload(name);
-    } catch (error) {
-        console.debug('Stored downloads not cleaned up:', error);
-    }
-}
-
-// Returns false when this download should use another way
-async function startDiskDownload(fileInfo) {
-    if (!isSafariEngine() || !(fileInfo.size > 0) || typeof Worker === 'undefined' ||
-        !navigator.storage || !navigator.storage.getDirectory) return false;
-    // Older senders don't answer range requests
-    try {
-        await requestRangeFromPeer(fileInfo, 0, 0, STREAM_PROBE_TIMEOUT);
-    } catch (error) {
-        console.log('Sender can\'t stream this file, downloading in memory instead:', error.message);
-        return false;
-    }
-    try {
-        const { quota, usage } = await navigator.storage.estimate();
-        if (quota && quota - usage < fileInfo.size * 1.02) {
-            resetDownloadButton(fileInfo.id);
-            // formatFileSize returns HTML; notifications show plain text
-            const plainSize = (bytes) => formatFileSize(bytes).replace(/<[^>]+>/g, '');
-            showNotification(`Not enough free browser storage for ${fileInfo.name} ` +
-                `(needs ${plainSize(fileInfo.size)}, ${plainSize(Math.max(0, quota - usage))} free)`, 'error');
-            return true; // Handled: the in-memory way would crash on a file this big
-        }
-    } catch (error) {
-        // No estimate available; go ahead and let a failed write report it
-    }
-
-    const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const writer = createDiskWriter();
-    try {
-        await writer.call({ type: 'open', folder: DISK_DOWNLOAD_FOLDER, name: storedName });
-    } catch (error) {
-        writer.terminate();
-        console.warn('Browser storage not usable, downloading another way:', error);
-        return false;
-    }
-
-    // Fetch pieces a few at a time and write each one where it belongs
-    const size = fileInfo.size;
-    let next = 0;
-    let written = 0;
-    let failed = null;
-    const worker = async () => {
-        while (!failed && next < size) {
-            const start = next;
-            const end = Math.min(size, start + DISK_PIECE) - 1;
-            next = end + 1;
-            const piece = await requestRangeFromPeer(fileInfo, start, end);
-            if (piece.data.byteLength !== end - start + 1) throw new Error('Piece has the wrong size');
-            await writer.call({ type: 'write', data: piece.data, at: start }, [piece.data]);
-            written += end - start + 1;
-            updateProgress(Math.min(99, (written / size) * 100), fileInfo.id);
-        }
-    };
-    (async () => {
-        try {
-            await Promise.all(Array.from({ length: DISK_PIECES_AHEAD }, () => worker().catch(error => {
-                failed = failed || error;
-            })));
-            if (failed) throw failed;
-            await writer.call({ type: 'close' });
-            writer.terminate();
-            const file = await (await (await diskDownloadFolder()).getFileHandle(storedName)).getFile();
-            offerStoredDownload(fileInfo, file, storedName);
-        } catch (error) {
-            console.error('Download into browser storage failed:', error);
-            writer.terminate();
-            deleteStoredDownload(storedName);
-            resetDownloadButton(fileInfo.id);
-            const full = /Quota/i.test(error.message);
-            showNotification(full
-                ? `Not enough free browser storage for ${fileInfo.name}`
-                : `Download of ${fileInfo.name} stopped. The sender may have disconnected.`, 'error');
-        }
-    })();
-    return true;
-}
-
-// The file is complete in browser storage; Save hands it to Safari (a tap, so Safari allows it)
-function offerStoredDownload(fileInfo, file, storedName) {
-    if (downloadProgressMap.has(fileInfo.id)) {
-        const entry = downloadProgressMap.get(fileInfo.id);
-        if (entry.button) entry.button.disabled = false;
-        downloadProgressMap.delete(fileInfo.id);
-    }
-    const save = () => {
-        const url = URL.createObjectURL(file);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileInfo.name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-        setTimeout(() => deleteStoredDownload(storedName), DISK_CLEANUP_DELAY);
-        readyDiskDownloads.delete(fileInfo.id);
-        markFileDownloaded(fileInfo.id, fileInfo.name, fileInfo.size);
-        updateBulkDownloadButtonState();
-        Analytics.track('file_downloaded_successfully', {
-            file_size: fileInfo.size,
-            file_type: Analytics.getFileExtension(fileInfo.name),
-            file_size_category: Analytics.getFileSizeCategory(fileInfo.size),
-            download_method: 'browser_storage',
-            device_type: Analytics.getDeviceType()
-        });
-    };
-    readyDiskDownloads.set(fileInfo.id, save);
-    const button = document.querySelector(`li.file-item[data-file-id="${fileInfo.id}"] button.icon-button`);
-    if (button) showSaveButton(button, save);
-    showNotification(`${fileInfo.name} is ready. Tap Save to keep it.`, 'success');
-}
-
-function showSaveButton(button, save) {
-    button.disabled = false;
-    button.innerHTML = '<span class="material-icons" translate="no">save_alt</span>';
-    button.title = 'Save to device';
-    button.onclick = save;
 }
 
 // Function to request and download a blob
@@ -2306,10 +1768,6 @@ async function requestAndDownloadBlob(fileInfo) {
         elements.transferProgress.classList.add('hidden'); // Hide the progress bar
         updateProgress(0, fileInfo.id);
         updateTransferInfo('');
-
-        // Straight to disk where the browser allows it; otherwise the file is collected in memory
-        if (await startDiskDownload(fileInfo)) return;   // Safari engine: browser storage first
-        if (await startStreamDownload(fileInfo)) return; // Others: the browser's download manager
 
         // Request the file directly
         conn.send({
@@ -2989,9 +2447,8 @@ async function sendFile(file) {
         // Generate a unique file ID that will be same for all recipients
         const fileId = generateFileId(file);
         
-        // Keep the picked file itself rather than a copy: a File is read from disk only when a
-        // piece of it is needed, so sharing a large file doesn't hold it in memory
-        const fileBlob = file;
+        // Create file blob once for the sender
+        const fileBlob = new Blob([await file.arrayBuffer()], { type: file.type });
         
         // Add to sender's history first
         const fileInfo = {
@@ -4889,56 +4346,11 @@ function createFileListItem(fileInfo, type) {
         }
     };
     
-    // Downloaded into browser storage (Safari) and waiting for Save: keep offering Save after a re-render
-    if (readyDiskDownloads.has(fileInfo.id)) showSaveButton(downloadBtn, readyDiskDownloads.get(fileInfo.id));
-
     li.appendChild(icon);
     li.appendChild(info);
-    const previewBtn = createPreviewButton(fileInfo, type);
-    if (previewBtn) li.appendChild(previewBtn);
     li.appendChild(downloadBtn);
     
     return li;
-}
-
-// Preview button for a file list item, or null when the file type can't be previewed.
-// It doesn't use the icon-button class, which other code uses to find the download button.
-function createPreviewButton(fileInfo, type) {
-    const preview = window.filePreview;
-    if (!preview || !preview.canPreview(fileInfo.name, fileInfo.type)) return null;
-
-    const btn = document.createElement('button');
-    btn.className = 'file-preview-button';
-    btn.title = 'Preview file';
-    btn.setAttribute('aria-label', `Preview ${fileInfo.name}`);
-    btn.innerHTML = '<span class="material-icons" translate="no">visibility</span>';
-    btn.onclick = () => {
-        if (type === 'sent' && sentFileBlobs.has(fileInfo.id)) {
-            const blob = sentFileBlobs.get(fileInfo.id);
-            preview.open(fileInfo, { blob, save: () => downloadBlob(blob, fileInfo.name, fileInfo.id) });
-            return;
-        }
-        // Received: only a small preview built by the sender travels, never the whole file
-        preview.open(fileInfo, {
-            requestPreview: (part, signal) => requestPreviewFromPeer(fileInfo, part, signal),
-            requestRange: (start, end) => requestRangeFromPeer(fileInfo, start, end),
-            save: () => downloadReceivedFile(fileInfo)
-        });
-    };
-    return btn;
-}
-
-// Download a received file the same way its Download button does (with progress on the button)
-function downloadReceivedFile(fileInfo) {
-    const button = document.querySelector(`li.file-item[data-file-id="${fileInfo.id}"] button.icon-button`);
-    if (button && !button.disabled) {
-        button.click();
-    } else if (!downloadProgressMap.has(fileInfo.id)) {
-        requestAndDownloadBlob(fileInfo).catch(error => {
-            showNotification('Failed to download file: ' + error.message, 'error');
-        });
-    }
-    showNotification(`Downloading ${fileInfo.name}…`, 'info');
 }
 
 // Render all file groups
@@ -5286,9 +4698,6 @@ function initConnectionKeepAlive() {
     // Handle beforeunload event
     window.addEventListener('beforeunload', handleBeforeUnload);
     
-    // Remove partly downloaded files a previous visit left in browser storage
-    cleanUpDiskDownloads();
-
     // Initialize screen wake manager
     screenWake.init();
     
@@ -5544,52 +4953,49 @@ function downloadBlob(blob, fileName, fileId) {
     });
 
     // If fileId is provided, update the UI
-    if (fileId) markFileDownloaded(fileId, fileName, blob.size);
+    if (fileId) {
+        // Clear any existing blob URL for this file (if re-downloaded)
+        if (completedFileBlobURLs.has(fileId)) {
+            const existingValue = completedFileBlobURLs.get(fileId);
+            // If it's a blob URL (string), revoke it
+            if (typeof existingValue === 'string') {
+                URL.revokeObjectURL(existingValue);
+                activeBlobURLs.delete(existingValue);
+            }
+            completedFileBlobURLs.delete(fileId);
+        }
+        
+        const listItem = document.querySelector(`[data-file-id="${fileId}"]`);
+        if (listItem) {
+            listItem.classList.add('download-completed');
+            const downloadButton = listItem.querySelector('.icon-button');
+            if (downloadButton) {
+                downloadButton.classList.add('download-completed');
+                downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
+                downloadButton.title = 'Open file';
+                
+                // Mark file as downloaded (without storing blob URL - file is in Downloads folder)
+                completedFileBlobURLs.set(fileId, true); // Use as flag to track downloaded files
+                
+                // Show notification when user clicks to open
+                downloadButton.onclick = () => {
+                    // Track file open click
+                    Analytics.track('file_open_clicked', {
+                        file_size: blob.size,
+                        file_type: Analytics.getFileExtension(fileName),
+                        device_type: Analytics.getDeviceType()
+                    });
+                    showNotification('Please check your Downloads folder', 'info');
+                };
+            }
+        }
+    }
 
     // Cleanup the download URL
     setTimeout(() => {
         URL.revokeObjectURL(url);
         activeBlobURLs.delete(url); // Remove from tracking
     }, 100);
-}
-
-// Show a file as downloaded in the list: its button becomes "Open file"
-function markFileDownloaded(fileId, fileName, fileSize) {
-    // Clear any existing blob URL for this file (if re-downloaded)
-    if (completedFileBlobURLs.has(fileId)) {
-        const existingValue = completedFileBlobURLs.get(fileId);
-        // If it's a blob URL (string), revoke it
-        if (typeof existingValue === 'string') {
-            URL.revokeObjectURL(existingValue);
-            activeBlobURLs.delete(existingValue);
-        }
-        completedFileBlobURLs.delete(fileId);
-    }
-    
-    const listItem = document.querySelector(`[data-file-id="${fileId}"]`);
-    if (listItem) {
-        listItem.classList.add('download-completed');
-        const downloadButton = listItem.querySelector('.icon-button');
-        if (downloadButton) {
-            downloadButton.classList.add('download-completed');
-            downloadButton.innerHTML = '<span class="material-icons" translate="no">open_in_new</span>';
-            downloadButton.title = 'Open file';
-            
-            // Mark file as downloaded (without storing blob URL - file is in Downloads folder)
-            completedFileBlobURLs.set(fileId, true); // Use as flag to track downloaded files
-            
-            // Show notification when user clicks to open
-            downloadButton.onclick = () => {
-                // Track file open click
-                Analytics.track('file_open_clicked', {
-                    file_size: fileSize,
-                    file_type: Analytics.getFileExtension(fileName),
-                    device_type: Analytics.getDeviceType()
-                });
-                showNotification('Please check your Downloads folder', 'info');
-            };
-        }
-    }
 }
 
 // Function to handle simultaneous download request
